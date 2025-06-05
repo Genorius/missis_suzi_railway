@@ -16,10 +16,10 @@ def get_order_by_bot_code_or_phone(code):
     }
     r1 = requests.get(url, headers=headers, params=params_code)
     if r1.ok:
-        data = r1.json()
-        orders = data.get("orders", [])
-        if orders:
-            order = orders[0]
+    for order in r1.json().get("orders", []):
+        real_code = order.get("customFields", {}).get("bot_code")
+        print(f"🔍 Проверка заказа: {order['id']} — bot_code={real_code}")
+        if real_code is not None and real_code == code:
             return {"id": order["id"], "number": order["number"]}
 
     # 📞 Поиск по номеру телефона
