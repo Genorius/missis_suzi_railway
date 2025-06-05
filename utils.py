@@ -16,18 +16,18 @@ def get_order_by_bot_code_or_phone(code):
     params_code = {
         "customFields[bot_code]": code,
         "limit": 1,
-        "apiKey": API_KEY
     }
     r1 = requests.get(url, params=params_code, headers=headers)
-    if r1.ok and r1.json().get("orders"):
-        order = r1.json()["orders"][0]
-        return {"id": order["id"], "number": order["number"]}
+print("🔎 Ответ по bot_code:", r1.status_code, r1.text)
+
+if r1.ok and r1.json().get("orders"):
+    order = r1.json()["orders"][0]
+    return {"id": order["id"], "number": order["number"]}
 
     # Поиск по номеру телефона
     params_phone = {
         "customer[phone]": code,
         "limit": 1,
-        "apiKey": API_KEY
     }
     r2 = requests.get(url, params=params_phone, headers=headers)
     if r2.ok and r2.json().get("orders"):
