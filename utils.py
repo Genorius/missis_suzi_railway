@@ -15,7 +15,7 @@ def get_order_by_bot_code_or_phone(code):
 
     params_code = {
         "customFields[bot_code]": code,
-        "limit": 1
+        "limit": 20
     }
     r1 = requests.get(url, params=params_code, headers=headers)
     print("🔎 Ответ по bot_code:", r1.status_code, r1.text)
