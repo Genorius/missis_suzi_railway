@@ -1,13 +1,41 @@
+import os
+import requests
 
+API_KEY = os.getenv("CRM_API_KEY")
+CRM_URL = os.getenv("CRM_URL")
 
-def save_review_to_crm(order_id, review_text):
-    url = f"{CRM_URL}/api/v5/orders/{order_id}/edit"
+def get_order_by_bot_code_or_phone(code: str):
+    url = f"{CRM_URL}/api/v5/orders"
     headers = {"X-API-KEY": API_KEY}
-    data = {
-        "customFields": {
-            "comments": review_text
+
+    print("📡 Ищем заказ по коду:", code)
+    print("🔐 API_KEY:", API_KEY)
+    print("🌐 CRM_URL:", CRM_URL)
+
+    # Сначала проверим, не похоже ли это на номер телефона
+    is_phone = code.strip().startswith("+") or code.strip().isdigit()
+
+    if is_phone:
+        params = {
+            "customer[phone]": code,
+            "limit": 50,
         }
-    }
-    response = requests.post(url, json=data, headers=headers)
-    print(f"📨 Отправка отзыва: {response.status_code} {response.text}")
-    return response.ok
+    else:
+        params = {
+            "customFields[bot_code]": code,
+            "limit": 50,
+        }
+
+    response = requests.get(url, headers=headers, params=params)
+    print("📥 Ответ CRM:", response.status_code, response.text)
+
+    if response.ok:
+        orders = response.json().get("orders", [])
+        for order in orders:
+            if not is_phone:
+                # Проверка, что bot_code в заказе точно совпадает
+                if order.get("customFields", {}).get("bot_code") != code:
+                    continue
+            return {"id": order["id"], "number": order["number"]}
+
+    return None
