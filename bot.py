@@ -1,16 +1,16 @@
 import os
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.executor import start_webhook
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram import executor
 
-from config import BOT_TOKEN, CRM_URL, API_KEY
+from config import BOT_TOKEN, WEBHOOK_URL, CRM_URL, API_KEY
 from redis_client import redis
 from utils import get_order_by_bot_code_or_phone, get_status_text, get_track_text, get_orders, save_review_to_crm
 
-print(f"ENV: BOT_TOKEN={BOT_TOKEN[:10]}..., CRM_URL={CRM_URL}")
+print(f"ENV: BOT_TOKEN={BOT_TOKEN[:10]}..., WEBHOOK_URL={WEBHOOK_URL}, CRM_URL={CRM_URL}")
 
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
@@ -70,7 +70,24 @@ async def callback_handler(callback_query: types.CallbackQuery):
 @dp.message_handler()
 async def echo_all(message: types.Message):
     print(f"📥 Получено сообщение: {message.text}")
-    await message.answer("🟢 Бот получил это сообщение!")
+
+async def on_startup(dp):
+    print(f"📡 Устанавливаем webhook: {WEBHOOK_URL}")
+    success = await bot.set_webhook(WEBHOOK_URL)
+    print(f"✅ Webhook установлен: {success}")
+    info = await bot.get_webhook_info()
+    print(f"🔍 Webhook Telegram сейчас указывает на: {info.url}")
+
+async def on_shutdown(dp):
+    await bot.delete_webhook()
 
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+    start_webhook(
+        dispatcher=dp,
+        webhook_path='',
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        skip_updates=True,
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8080)),
+    )
