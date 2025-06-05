@@ -45,7 +45,9 @@ async def process_auth(message: Message, state: FSMContext):
         if count >= 3:
             await message.answer("Очень жаль, что не получается войти 😔 Наверняка есть веская причина, и я обязательно с этим разберусь!\n\nНажмите, пожалуйста, кнопку <b>Поддержка</b> — и я сразу начну искать способ Вам помочь 🤍")
             await notify_admin_about_failed_auth(message)
+            await state.clear()
         else:
+            await state.update_data(fail_count=count)
             await message.answer("❌ Увы, я не нашла заказ по этому коду или номеру телефона. Попробуйте ещё раз — я рядом ❤️")
 
 async def notify_admin_about_failed_auth(message: Message):
