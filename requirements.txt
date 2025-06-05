@@ -1,5 +1,4 @@
-aiogram==3.4.1
-redis
+aiogram==2.25.2
 aiohttp
 python-dotenv
-requests
+redis
