@@ -13,8 +13,7 @@ def get_order_by_bot_code_or_phone(code):
     params_code = {
         "customFields[bot_code]": code,
         "limit": 1,
-        "apiKey": API_KEY
-    }
+            }
     r1 = requests.get(url, params=params_code, headers=headers)
     if r1.ok and r1.json().get("orders"):
         order = r1.json()["orders"][0]
@@ -24,7 +23,6 @@ def get_order_by_bot_code_or_phone(code):
     params_phone = {
         "customer[phone]": code,
         "limit": 1,
-        "apiKey": API_KEY
     }
     r2 = requests.get(url, params=params_phone, headers=headers)
     if r2.ok and r2.json().get("orders"):
