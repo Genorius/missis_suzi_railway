@@ -1,12 +1,11 @@
 from aiogram import Bot, Dispatcher, F, Router, types, html
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import Message
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.enums import ParseMode
-from aiogram.filters import Command
-from aiogram.client.default import DefaultBotProperties
 from aiohttp import web
 import os
 
@@ -106,7 +105,7 @@ async def support_handler(callback: types.CallbackQuery):
     await bot.send_message(chat_id=ADMIN_USERNAME, text="📬 Клиент обратился в поддержку:\n" + callback.message.text)
     await callback.answer()
 
-# Webhook и сервер
+# Webhook и запуск
 async def webhook_handler(request):
     data = await request.json()
     update = types.Update(**data)
