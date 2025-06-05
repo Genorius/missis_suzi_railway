@@ -1,3 +1,4 @@
+import os
 import requests
 
 API_KEY = os.getenv("CRM_API_KEY")
