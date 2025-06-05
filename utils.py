@@ -30,15 +30,15 @@ def get_order_by_bot_code_or_phone(code):
         "limit": 20
     }
     r2 = requests.get(url, headers=headers, params=params_phone)
-    print("📞 Ответ по телефону:", r2.status_code, r2.text)
-    if r2.ok and r2.json().get("orders"):
-        order = r2.json()["orders"][0]
-        return {"id": order["id"], "number": order["number"]}
+    print("📡 Ответ по телефону:", r2.status_code, r2.text)
+    if r2.ok:
+        for order in r2.json().get("orders", []):
+            phone = order.get("customer", {}).get("phones", [{}])[0].get("number", "")
+            print(f"📞 Проверка телефона в заказе: {phone}")
+            if code in phone:
+                return {"id": order["id"], "number": order["number"]}
 
-    print("❌ Заказ не найден.")
     return None
-
-
 
 def get_status_text(order_id):
     url = f"{CRM_URL}/api/v5/orders/{order_id}"
@@ -51,7 +51,6 @@ def get_status_text(order_id):
         status = order.get("statusComment") or "Статус уточняется"
         return f"📦 Ваш заказ:\n{product_list}\n\nТекущий статус: {status}"
     return "⚠️ Не удалось получить информацию о заказе. Попробуйте позже."
-
 
 def get_track_text(order_id):
     url = f"{CRM_URL}/api/v5/orders/{order_id}"
@@ -69,7 +68,6 @@ def get_track_text(order_id):
             return "📭 Пока трек-номер ещё не присвоен — как только он появится, я сразу расскажу!"
     return "⚠️ Не удалось получить информацию о заказе. Попробуйте позже."
 
-
 def get_orders(active=True):
     url = f"{CRM_URL}/api/v5/orders"
     headers = {"X-API-KEY": API_KEY}
@@ -78,26 +76,13 @@ def get_orders(active=True):
         orders = r.json().get("orders", [])
         result = []
         for o in orders:
-            if active and o["status"] in ["complete", "cancelled"]:
+            status = o.get("status", "")
+            if active and status in ["complete", "cancelled"]:
                 continue
-            if not active and o["status"] not in ["complete", "cancelled"]:
+            if not active and status not in ["complete", "cancelled"]:
                 continue
-            result.append(f"• Заказ {o['number']} от {o['createdAt'][:10]} — {o['statusComment'] or 'без комментария'}")
+            result.append(f"• Заказ {o['number']} от {o['createdAt'][:10]} — {o.get('statusComment') or 'без комментария'}")
         if result:
             return "\n".join(result)
         return "📦 Пока нет активных заказов. Я всё проверила 🤍" if active else "📦 Пока нет завершённых заказов. Как только появятся — расскажу ✨"
     return "⚠️ Не удалось загрузить список заказов."
-
-
-def save_review_to_crm(order_id, text):
-    url = f"{CRM_URL}/api/v5/orders/{order_id}/edit"
-    headers = {"X-API-KEY": API_KEY}
-    data = {
-        "order": {
-            "customFields": {
-                "comments": text
-            }
-        }
-    }
-    r = requests.post(url, json=data, headers=headers)
-    return r.ok
