@@ -16,7 +16,7 @@ def get_order_by_bot_code_or_phone(code):
         "limit": 20
     }
     r1 = requests.get(url, headers=headers, params=params_code)
-    if r1.ok:
+if r1.ok:
     for order in r1.json().get("orders", []):
         real_code = order.get("customFields", {}).get("bot_code")
         print(f"🔍 Проверка заказа: {order['id']} — bot_code={real_code}")
