@@ -1,7 +1,7 @@
 import requests
 
-API_KEY = "pDUAhKJaZZlSXnWtSberXS6PCwfiGP4D"
-CRM_URL = "https://valentinkalinovski.retailcrm.ru"
+API_KEY = os.getenv("CRM_API_KEY")
+CRM_URL = os.getenv("CRM_URL")
 
 
 def get_order_by_bot_code_or_phone(code):
