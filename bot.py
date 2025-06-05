@@ -67,10 +67,17 @@ async def callback_handler(callback_query: types.CallbackQuery):
     elif callback_query.data == "support":
         await callback_query.message.answer("🧑‍💬 Напишите ваш вопрос, и мы обязательно ответим!")
 
+@dp.message_handler()
+async def echo_all(message: types.Message):
+    print(f"📥 Получено сообщение: {message.text}")
+    await message.answer("🟢 Бот получил это сообщение!")
+
 async def on_startup(dp):
     print(f"📡 Устанавливаем webhook: {WEBHOOK_URL}")
     success = await bot.set_webhook(WEBHOOK_URL)
     print(f"✅ Webhook установлен: {success}")
+    info = await bot.get_webhook_info()
+    print(f"🔍 Webhook Telegram сейчас указывает на: {info.url}")
 
 async def on_shutdown(dp):
     await bot.delete_webhook()
