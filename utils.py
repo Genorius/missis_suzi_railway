@@ -1,7 +1,13 @@
 import aiohttp
 from config import API_KEY, CRM_URL
 
-headers = {"Content-Type": "application/json", "X-API-KEY": API_KEY}
+if not API_KEY:
+    raise ValueError("❌ API_KEY не задан! Проверь переменные окружения.")
+
+headers = {
+    "Content-Type": "application/json",
+    "X-API-KEY": API_KEY
+}
 
 async def get_order_by_bot_code_or_phone(code):
     if code.startswith("+") or code.isdigit():
