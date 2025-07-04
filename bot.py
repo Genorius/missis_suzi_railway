@@ -16,9 +16,9 @@ WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 WEBHOOK_URL_FULL = WEBHOOK_URL + WEBHOOK_PATH
 
 WELCOME_MSG = (
-    "👋 Привет!\\n"
-    "Я — бот Missis S’Uzi.\\n"
-    "Помогаю следить за заказами и быть на связи, если что-то понадобится.\\n\\n"
+    "👋 Привет!\n"
+    "Я — бот Missis S’Uzi.\n"
+    "Помогаю следить за заказами и быть на связи, если что-то понадобится.\n\n"
     "Для начала пришлите, пожалуйста, ваш уникальный код или номер телефона 📦"
 )
 
@@ -36,10 +36,11 @@ async def start_handler(message: types.Message):
 @dp.message_handler(lambda message: message.text == "💬 Поддержка")
 async def support_handler(message: types.Message):
     user_id = message.from_user.id
+    user_text = message.text
     await bot.send_message(
         ADMIN_TELEGRAM_ID,
         f"Сообщение от клиента #{user_id}:
-{message.text}"
+{user_text}"
     )
     await message.answer("Сообщение передано! Мы скоро ответим 🤍")
 
