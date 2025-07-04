@@ -3,7 +3,6 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.executor import start_webhook
 from config import TELEGRAM_TOKEN, ADMIN_TELEGRAM_ID, WEBHOOK_URL
-WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 from crm import get_order_by_bot_code, get_orders_by_phone, get_order_status, get_tracking_number
 from redis_client import is_authorized, save_authorization
 import re
@@ -11,6 +10,8 @@ import re
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot)
+
+WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 
 WELCOME_MSG = """👋 Привет!
 Я — бот Missis S’Uzi.
@@ -32,8 +33,8 @@ async def start_handler(message: types.Message):
 async def support_handler(message: types.Message):
     await bot.send_message(
         ADMIN_TELEGRAM_ID,
-        f"""Сообщение от клиента #{message.from_user.id}:
-{message.text}"""
+        f"Сообщение от клиента #{message.from_user.id}:
+{message.text}"
     )
     await message.answer("Сообщение передано! Мы скоро ответим 🤍")
 
@@ -65,7 +66,8 @@ async def handle_message(message: types.Message):
     elif text == "🔢 Трек-номер":
         track = get_tracking_number(user_id)
         if track:
-            await message.answer(f"📦 Трек-номер: {track}\n[Отследить](https://www.cdek.ru/ru/tracking)", parse_mode="Markdown")
+            await message.answer(f"📦 Трек-номер: {track}
+[Отследить](https://www.cdek.ru/ru/tracking)", parse_mode="Markdown")
         else:
             await message.answer("Трек-номер пока не присвоен. Как только он появится — сразу сообщим!")
     elif text == "🗂 Мои заказы":
@@ -74,13 +76,14 @@ async def handle_message(message: types.Message):
             await message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍")
         else:
             msg = "\n".join([f"• {o['number']} — {o['status']}" for o in orders])
-            await message.answer(f"Ваши заказы:\n{msg}")
+            await message.answer(f"Ваши заказы:
+{msg}")
     else:
         await message.answer("Выберите команду из меню или напишите нам 💬")
 
 async def on_startup(dp):
-    print(f"[DEBUG] Устанавливаю webhook: {WEBHOOK_URL}")
-    result = await bot.set_webhook(WEBHOOK_URL + )
+    print(f"[DEBUG] Устанавливаю webhook: {WEBHOOK_URL + WEBHOOK_PATH}")
+    result = await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH)
     print(f"[DEBUG] Webhook установлен: {result}")
 
 async def on_shutdown(dp):
@@ -89,7 +92,7 @@ async def on_shutdown(dp):
 if __name__ == "__main__":
     start_webhook(
         dispatcher=dp,
-        =WEBHOOK_PATH,
+        webhook_path=WEBHOOK_PATH,
         on_startup=on_startup,
         on_shutdown=on_shutdown,
         skip_updates=True,
