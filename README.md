@@ -1,1 +1,1 @@
-Версия v7.2 — запуск через webhook (Railway)
+v7.2.1-debug: логирование установки webhook

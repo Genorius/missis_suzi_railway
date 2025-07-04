@@ -30,10 +30,10 @@ async def start_handler(message: types.Message):
 @dp.message_handler(lambda message: message.text == "💬 Поддержка")
 async def support_handler(message: types.Message):
     await bot.send_message(
-    ADMIN_TELEGRAM_ID,
-    f"""Сообщение от клиента #{message.from_user.id}:
+        ADMIN_TELEGRAM_ID,
+        f"""Сообщение от клиента #{message.from_user.id}:
 {message.text}"""
-)
+    )
     await message.answer("Сообщение передано! Мы скоро ответим 🤍")
 
 @dp.message_handler(lambda message: True)
@@ -78,7 +78,9 @@ async def handle_message(message: types.Message):
         await message.answer("Выберите команду из меню или напишите нам 💬")
 
 async def on_startup(dp):
-    await bot.set_webhook(WEBHOOK_URL)
+    print(f"[DEBUG] Устанавливаю webhook: {WEBHOOK_URL}")
+    result = await bot.set_webhook(WEBHOOK_URL)
+    print(f"[DEBUG] Webhook установлен: {result}")
 
 async def on_shutdown(dp):
     await bot.delete_webhook()
