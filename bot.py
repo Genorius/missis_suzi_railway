@@ -1,108 +1,97 @@
+
 import logging
-import re
+import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.utils.executor import start_webhook
-from config import TELEGRAM_TOKEN, ADMIN_TELEGRAM_ID, WEBHOOK_URL
-from crm import get_order_by_bot_code, get_orders_by_phone, get_order_status, get_tracking_number
-from redis_client import is_authorized, save_authorization
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 
-logging.basicConfig(level=logging.INFO)
+from redis_client import is_authorized, authorize_user
+from crm import get_order_by_bot_code, get_orders_by_phone, get_order_status, get_tracking_number
+
+import os
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")
+
+WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL")
+WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 bot = Bot(token=TELEGRAM_TOKEN)
-dp = Dispatcher(bot)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
 
-WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
-WEBHOOK_URL_FULL = WEBHOOK_URL + WEBHOOK_PATH
+# Кнопки
+menu_keyboard = ReplyKeyboardMarkup(keyboard=[
+    [KeyboardButton(text="📦 Статус отправления")],
+    [KeyboardButton(text="📮 Трек-номер")],
+    [KeyboardButton(text="📋 Мои заказы")],
+    [KeyboardButton(text="🆘 Поддержка")]
+], resize_keyboard=True)
 
-WELCOME_MSG = (
-    "👋 Привет!\n"
-    "Я — бот Missis S’Uzi.\n"
-    "Помогаю следить за заказами и быть на связи, если что-то понадобится.\n\n"
-    "Для начала пришлите, пожалуйста, ваш уникальный код или номер телефона 📦"
-)
+@dp.message(lambda message: message.text == "/start")
+async def cmd_start(message: types.Message):
+    await message.answer(
+        "👋 Привет!
+"
+        "Я — бот Missis S’Uzi.
+"
+        "Помогаю следить за заказами и быть на связи, если что-то понадобится.
 
-def main_keyboard():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("📦 Статус отправления", "🔢 Трек-номер")
-    kb.add("🗂 Мои заказы")
-    kb.add(KeyboardButton("💬 Поддержка"))
-    return kb
-
-@dp.message_handler(commands=["start"])
-async def start_handler(message: types.Message):
-    await message.answer(WELCOME_MSG)
-
-@dp.message_handler(lambda message: message.text == "💬 Поддержка")
-async def support_handler(message: types.Message):
-    user_id = message.from_user.id
-    user_text = message.text
-    await bot.send_message(
-        ADMIN_TELEGRAM_ID,
-        f"Сообщение от клиента #{user_id}:\n{user_text}"
+"
+        "Для начала пришлите, пожалуйста, ваш уникальный код или номер телефона 📦"
     )
-    await message.answer("Сообщение передано! Мы скоро ответим 🤍")
 
-@dp.message_handler(lambda message: True)
+@dp.message()
 async def handle_message(message: types.Message):
     user_id = message.from_user.id
-    text = message.text.strip()
+    user_input = message.text.strip()
 
     if not is_authorized(user_id):
-        if re.match(r"^\+?\d{10,15}$", text):
-            orders = get_orders_by_phone(text)
-            if orders:
-                save_authorization(user_id, text)
-                await message.answer("Вы авторизованы по номеру телефона ☎️", reply_markup=main_keyboard())
-            else:
-                await message.answer("Не найден заказ с этим номером. Попробуйте ещё раз.")
+        if authorize_user(user_id, user_input):
+            await message.answer("Код принят! Добро пожаловать 🤍", reply_markup=menu_keyboard)
         else:
-            order = get_order_by_bot_code(text)
-            if order:
-                phone = order.get('customer', {}).get('phones', [{}])[0].get('number', '')
-                save_authorization(user_id, phone)
-                await message.answer("Код принят! Добро пожаловать 🤍", reply_markup=main_keyboard())
-            else:
-                await message.answer("Неверный код. Уточните у администратора.")
+            await message.answer("Код не найден. Попробуйте ещё раз или напишите нам 📨")
         return
 
-    if text == "📦 Статус отправления":
+    if user_input == "📦 Статус отправления":
         status = get_order_status(user_id)
-        await message.answer(f"📦 Статус заказа: {status}")
-    elif text == "🔢 Трек-номер":
+        await message.answer(f"Статус заказа: {status if status else 'Не удалось определить'} 📦")
+
+    elif user_input == "📮 Трек-номер":
         track = get_tracking_number(user_id)
         if track:
-            await message.answer(
-                f"📦 Трек-номер: {track}\n[Отследить в СДЭК](https://www.cdek.ru/ru/tracking)",
-                parse_mode="Markdown"
-            )
+            await message.answer(f"📦 Трек-номер: {track}")
         else:
             await message.answer("Трек-номер пока не присвоен. Как только он появится — сразу сообщим!")
-    elif text == "🗂 Мои заказы":
+
+    elif user_input == "📋 Мои заказы":
         orders = get_orders_by_phone(user_id)
         if not orders:
-            await message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍")
+            await message.answer("Заказы не найдены.")
         else:
-            msg = "\n".join([f"• {o['number']} — {o['status']}" for o in orders])
-            await message.answer(f"Ваши заказы:\n{msg}")
-    else:
-        await message.answer("Выберите команду из меню или напишите нам 💬")
+            text = "Ваши заказы:
+" + "\n".join([f"• {o['number']} — {o['status']}" for o in orders])
+            await message.answer(text)
 
-async def on_startup(dp):
-    print(f"[DEBUG] Устанавливаю webhook: {WEBHOOK_URL_FULL}")
-    await bot.set_webhook(WEBHOOK_URL_FULL)
+    elif user_input == "🆘 Поддержка":
+        support_message = f"Сообщение от клиента #{user_id}: {message.text}"
+        await bot.send_message(ADMIN_TELEGRAM_ID, support_message)
+        await message.answer("Мы уже на связи и скоро ответим вам 💬")
 
-async def on_shutdown(dp):
-    print("[DEBUG] Удаляю webhook")
-    await bot.delete_webhook()
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL)
+    logging.debug(f"Webhook установлен: {WEBHOOK_URL}")
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+    app = web.Application()
+    dp.startup.register(on_startup)
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+    web.run_app(app, host="0.0.0.0", port=8000)
 
 if __name__ == "__main__":
-    start_webhook(
-        dispatcher=dp,
-        webhook_path=WEBHOOK_PATH,
-        on_startup=on_startup,
-        on_shutdown=on_shutdown,
-        skip_updates=True,
-        host="0.0.0.0",
-        port=8000,
-    )
+    main()

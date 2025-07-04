@@ -1,4 +1,5 @@
-aiogram==2.25.1
-python-dotenv
-requests
+aiogram==3.5.0
+aiohttp
 redis
+requests
+python-dotenv

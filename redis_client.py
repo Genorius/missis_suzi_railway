@@ -1,21 +1,22 @@
-import redis
-from config import REDIS_URL
 
-r = redis.from_url(REDIS_URL)
+import redis
+import os
+
+r = redis.Redis(
+    host=os.getenv("REDIS_HOST", "localhost"),
+    port=int(os.getenv("REDIS_PORT", 6379)),
+    db=0,
+    decode_responses=True
+)
 
 def is_authorized(user_id):
-    return r.get(f"user:{user_id}") == b"1"
+    return r.exists(f"user:{user_id}")
 
-def save_authorization(user_id):
-    r.set(f"user:{user_id}", "1", ex=3600 * 24)
+def authorize_user(user_id, code_or_phone):
+    r.set(f"user:{user_id}", 1)
+    r.set(f"user:{user_id}:code", code_or_phone)
+    r.set(f"user:{user_id}:phone", code_or_phone)
+    return True
 
-def save_user_context(order_id, phone):
-    r.set("order_id", order_id)
-    if phone:
-        r.set("phone", phone)
-
-def get_user_order():
-    return r.get("order_id").decode("utf-8") if r.get("order_id") else None
-
-def get_user_phone():
-    return r.get("phone").decode("utf-8") if r.get("phone") else None
+def get_user_context(user_id, key):
+    return r.get(f"user:{user_id}:{key}")
