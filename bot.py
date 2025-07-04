@@ -32,10 +32,9 @@ async def start_handler(message: types.Message):
 @dp.message_handler(lambda message: message.text == "💬 Поддержка")
 async def support_handler(message: types.Message):
     await bot.send_message(
-        ADMIN_TELEGRAM_ID,
-        f"Сообщение от клиента #{message.from_user.id}:
-{message.text}"
-    )
+    ADMIN_TELEGRAM_ID,
+    f"Сообщение от клиента #{message.from_user.id}:\n{message.text}"
+)
     await message.answer("Сообщение передано! Мы скоро ответим 🤍")
 
 @dp.message_handler(lambda message: True)
