@@ -39,8 +39,7 @@ async def support_handler(message: types.Message):
     user_text = message.text
     await bot.send_message(
         ADMIN_TELEGRAM_ID,
-        f"Сообщение от клиента #{user_id}:
-{user_text}"
+        f"Сообщение от клиента #{user_id}:\n{user_text}"
     )
     await message.answer("Сообщение передано! Мы скоро ответим 🤍")
 
@@ -74,8 +73,7 @@ async def handle_message(message: types.Message):
         track = get_tracking_number(user_id)
         if track:
             await message.answer(
-                f"📦 Трек-номер: {track}
-[Отследить в СДЭК](https://www.cdek.ru/ru/tracking)",
+                f"📦 Трек-номер: {track}\n[Отследить в СДЭК](https://www.cdek.ru/ru/tracking)",
                 parse_mode="Markdown"
             )
         else:
@@ -86,8 +84,7 @@ async def handle_message(message: types.Message):
             await message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍")
         else:
             msg = "\n".join([f"• {o['number']} — {o['status']}" for o in orders])
-            await message.answer(f"Ваши заказы:
-{msg}")
+            await message.answer(f"Ваши заказы:\n{msg}")
     else:
         await message.answer("Выберите команду из меню или напишите нам 💬")
 
