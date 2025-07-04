@@ -32,9 +32,10 @@ async def start_handler(message: types.Message):
 @dp.message_handler(lambda message: message.text == "💬 Поддержка")
 async def support_handler(message: types.Message):
     await bot.send_message(
-    ADMIN_TELEGRAM_ID,
-    f"Сообщение от клиента #{message.from_user.id}:\n{message.text}"
-)
+        ADMIN_TELEGRAM_ID,
+        f"Сообщение от клиента #{message.from_user.id}:
+{message.text}"
+    )
     await message.answer("Сообщение передано! Мы скоро ответим 🤍")
 
 @dp.message_handler(lambda message: True)
@@ -65,8 +66,11 @@ async def handle_message(message: types.Message):
     elif text == "🔢 Трек-номер":
         track = get_tracking_number(user_id)
         if track:
-            await message.answer(f"📦 Трек-номер: {track}
-[Отследить](https://www.cdek.ru/ru/tracking)", parse_mode="Markdown")
+            await message.answer(
+                f"📦 Трек-номер: {track}
+[Отследить](https://www.cdek.ru/ru/tracking)",
+                parse_mode="Markdown"
+            )
         else:
             await message.answer("Трек-номер пока не присвоен. Как только он появится — сразу сообщим!")
     elif text == "🗂 Мои заказы":
