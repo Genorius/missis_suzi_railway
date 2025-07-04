@@ -1,9 +1,10 @@
 import redis
-import os
+from config import REDIS_URL
 
-redis = redis.Redis(
-    host=os.getenv("REDIS_HOST", "localhost"),
-    port=int(os.getenv("REDIS_PORT", 6379)),
-    db=0,
-    decode_responses=True
-)
+r = redis.from_url(REDIS_URL)
+
+def is_authorized(user_id):
+    return r.get(f"user:{user_id}") == b"1"
+
+def save_authorization(user_id):
+    r.set(f"user:{user_id}", "1", ex=3600 * 24)

@@ -1,9 +1,9 @@
 import os
 from dotenv import load_dotenv
-
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-API_KEY = "pDUAhKJaZZlSXnWtSberXS6PCwfiGP4D"
-CRM_URL = "https://valentinkalinovski.retailcrm.ru"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CRM_API_KEY = os.getenv("CRM_API_KEY")
+CRM_URL = os.getenv("CRM_URL")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "123456"))

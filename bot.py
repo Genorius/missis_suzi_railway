@@ -1,93 +1,82 @@
-import os
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.executor import start_webhook
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
+import logging
+from aiogram import Bot, Dispatcher, executor, types
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from config import TELEGRAM_TOKEN, ADMIN_TELEGRAM_ID
+from crm import get_order_by_bot_code, get_orders_by_phone, get_order_status, get_tracking_number, save_feedback
+from redis_client import is_authorized, save_authorization
+import re
 
-from config import BOT_TOKEN, WEBHOOK_URL, CRM_URL, API_KEY
-from redis_client import redis
-from utils import get_order_by_bot_code_or_phone, get_status_text, get_track_text, get_orders, save_review_to_crm
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=TELEGRAM_TOKEN)
+dp = Dispatcher(bot)
 
-print(f"ENV: BOT_TOKEN={BOT_TOKEN[:10]}..., WEBHOOK_URL={WEBHOOK_URL}, CRM_URL={CRM_URL}")
+# Приветственное сообщение
+WELCOME_MSG = ("👋 Привет!
+"
+               "Я — бот Missis S’Uzi.
+"
+               "Помогаю следить за заказами и быть на связи, если что-то понадобится.
+"
+               "Для начала пришлите, пожалуйста, ваш уникальный код или номер телефона 📦")
 
-bot = Bot(token=BOT_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
-
-class AuthState(StatesGroup):
-    waiting_for_code = State()
+# Кнопки после авторизации
+def main_keyboard():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("📦 Статус отправления", "🔢 Трек-номер")
+    kb.add("🗂 Мои заказы", "💬 Поддержка")
+    return kb
 
 @dp.message_handler(commands=["start"])
-async def start_handler(message: types.Message, state: FSMContext):
-    await message.answer("👋 Привет! Я бот Missis S’Uzi.\n\nПожалуйста, введите ваш код заказа или номер телефона 📱")
-    await state.set_state(AuthState.waiting_for_code)
+async def start_handler(message: types.Message):
+    await message.answer(WELCOME_MSG)
 
-@dp.message_handler(state=AuthState.waiting_for_code)
-async def auth_handler(message: types.Message, state: FSMContext):
-    code = message.text.strip()
+@dp.message_handler(lambda msg: msg.text.startswith("💬"))
+async def support_handler(message: types.Message):
+    await bot.send_message(ADMIN_TELEGRAM_ID, f"Сообщение от клиента:
+{message.text}")
+    await message.answer("Сообщение передано! Мы скоро ответим 🤍")
+
+@dp.message_handler(lambda message: True)
+async def handle_message(message: types.Message):
     user_id = message.from_user.id
+    text = message.text.strip()
 
-    order = await get_order_by_bot_code_or_phone(code)
-    if order:
-        redis.set(str(user_id), order['id'])
-        await state.finish()
-        await message.answer(
-            f"✨ Добро пожаловать! Заказ найден:\n<b>{order['number']}</b>",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton("📦 Статус отправления", callback_data="status")],
-                [InlineKeyboardButton("🔍 Трек-номер", callback_data="track")],
-                [InlineKeyboardButton("📋 Мои заказы", callback_data="orders")],
-                [InlineKeyboardButton("🆘 Поддержка", callback_data="support")]
-            ])
-        )
-    else:
-        await message.answer("❗️Упс! Заказ не найден. Попробуйте ещё раз.")
-
-@dp.callback_query_handler(lambda c: c.data in ["status", "track", "orders", "support"])
-async def callback_handler(callback_query: types.CallbackQuery):
-    user_id = str(callback_query.from_user.id)
-    order_id = redis.get(user_id)
-
-    if not order_id:
-        await callback_query.message.answer("🔒 Вы не авторизованы. Пожалуйста, отправьте /start")
+    if not is_authorized(user_id):
+        if re.match(r"^\+?\d{10,15}$", text):
+            orders = get_orders_by_phone(text)
+            if orders:
+                save_authorization(user_id)
+                await message.answer("Вы авторизованы по номеру телефона ☎️", reply_markup=main_keyboard())
+            else:
+                await message.answer("Не найден заказ с этим номером. Попробуйте ещё раз.")
+        else:
+            order = get_order_by_bot_code(text)
+            if order:
+                save_authorization(user_id)
+                await message.answer("Код принят! Добро пожаловать 🤍", reply_markup=main_keyboard())
+            else:
+                await message.answer("Неверный код. Уточните у администратора.")
         return
 
-    if callback_query.data == "status":
-        text = await get_status_text(order_id)
-        await callback_query.message.answer(text)
-    elif callback_query.data == "track":
-        text = await get_track_text(order_id)
-        await callback_query.message.answer(text)
-    elif callback_query.data == "orders":
-        text = await get_orders(order_id)
-        await callback_query.message.answer(text)
-    elif callback_query.data == "support":
-        await callback_query.message.answer("🧑‍💬 Напишите ваш вопрос, и мы обязательно ответим!")
+    # Пользователь авторизован
+    if text == "📦 Статус отправления":
+        status = get_order_status(user_id)
+        await message.answer(f"Статус заказа: {status}")
+    elif text == "🔢 Трек-номер":
+        track = get_tracking_number(user_id)
+        if track:
+            await message.answer(f"📦 Трек-номер: {track}\n[Отследить](https://www.cdek.ru/ru/tracking)", parse_mode="Markdown")
+        else:
+            await message.answer("Трек-номер пока не присвоен. Как только он появится — сразу сообщим!")
+    elif text == "🗂 Мои заказы":
+        orders = get_orders_by_phone("dummy")  # заменить на актуальный номер
+        if not orders:
+            await message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍")
+        else:
+            msg = "\n".join([f"• {o['number']} — {o['status']}" for o in orders])
+            await message.answer(f"Ваши заказы:\n{msg}")
+    else:
+        await message.answer("Выберите команду из меню или напишите нам 💬")
 
-@dp.message_handler()
-async def echo_all(message: types.Message):
-    print(f"📥 Получено сообщение: {message.text}")
-
-async def on_startup(dp):
-    print(f"📡 Устанавливаем webhook: {WEBHOOK_URL}")
-    success = await bot.set_webhook(WEBHOOK_URL)
-    print(f"✅ Webhook установлен: {success}")
-    info = await bot.get_webhook_info()
-    print(f"🔍 Webhook Telegram сейчас указывает на: {info.url}")
-
-async def on_shutdown(dp):
-    await bot.delete_webhook()
-
-if __name__ == '__main__':
-    start_webhook(
-        dispatcher=dp,
-        webhook_path='',
-        on_startup=on_startup,
-        on_shutdown=on_shutdown,
-        skip_updates=True,
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8080)),
-    )
+if __name__ == "__main__":
+    executor.start_polling(dp, skip_updates=True)
