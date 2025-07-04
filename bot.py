@@ -1,8 +1,8 @@
 import logging
 from aiogram import Bot, Dispatcher, executor, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from config import TELEGRAM_TOKEN, ADMIN_TELEGRAM_ID
-from crm import get_order_by_bot_code, get_orders_by_phone, get_order_status, get_tracking_number, save_feedback
+from crm import get_order_by_bot_code, get_orders_by_phone, get_order_status, get_tracking_number
 from redis_client import is_authorized, save_authorization
 import re
 
@@ -10,27 +10,26 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot)
 
-# Приветственное сообщение
 WELCOME_MSG = """👋 Привет!
 Я — бот Missis S’Uzi.
 Помогаю следить за заказами и быть на связи, если что-то понадобится.
 Для начала пришлите, пожалуйста, ваш уникальный код или номер телефона 📦"""
 
-# Кнопки после авторизации
 def main_keyboard():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("📦 Статус отправления", "🔢 Трек-номер")
-    kb.add("🗂 Мои заказы", "💬 Поддержка")
+    kb.add("🗂 Мои заказы")
+    kb.add(KeyboardButton("💬 Поддержка"))
     return kb
 
 @dp.message_handler(commands=["start"])
 async def start_handler(message: types.Message):
     await message.answer(WELCOME_MSG)
 
-@dp.message_handler(lambda msg: msg.text.startswith("💬"))
+@dp.message_handler(lambda message: message.text == "💬 Поддержка")
 async def support_handler(message: types.Message):
-    await bot.send_message(ADMIN_TELEGRAM_ID, f"""Сообщение от клиента:
-{message.text}""")
+    await bot.send_message(ADMIN_TELEGRAM_ID, f"Сообщение от клиента #{message.from_user.id}:
+{message.text}")
     await message.answer("Сообщение передано! Мы скоро ответим 🤍")
 
 @dp.message_handler(lambda message: True)
@@ -55,7 +54,6 @@ async def handle_message(message: types.Message):
                 await message.answer("Неверный код. Уточните у администратора.")
         return
 
-    # Пользователь авторизован
     if text == "📦 Статус отправления":
         status = get_order_status(user_id)
         await message.answer(f"Статус заказа: {status}")
@@ -66,7 +64,7 @@ async def handle_message(message: types.Message):
         else:
             await message.answer("Трек-номер пока не присвоен. Как только он появится — сразу сообщим!")
     elif text == "🗂 Мои заказы":
-        orders = get_orders_by_phone("dummy")  # заменить на актуальный номер
+        orders = get_orders_by_phone(user_id=user_id)
         if not orders:
             await message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍")
         else:
@@ -74,6 +72,3 @@ async def handle_message(message: types.Message):
             await message.answer(f"Ваши заказы:\n{msg}")
     else:
         await message.answer("Выберите команду из меню или напишите нам 💬")
-
-if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
