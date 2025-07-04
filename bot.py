@@ -3,6 +3,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.executor import start_webhook
 from config import TELEGRAM_TOKEN, ADMIN_TELEGRAM_ID, WEBHOOK_URL
+WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 from crm import get_order_by_bot_code, get_orders_by_phone, get_order_status, get_tracking_number
 from redis_client import is_authorized, save_authorization
 import re
@@ -79,7 +80,7 @@ async def handle_message(message: types.Message):
 
 async def on_startup(dp):
     print(f"[DEBUG] Устанавливаю webhook: {WEBHOOK_URL}")
-    result = await bot.set_webhook(WEBHOOK_URL)
+    result = await bot.set_webhook(WEBHOOK_URL + )
     print(f"[DEBUG] Webhook установлен: {result}")
 
 async def on_shutdown(dp):
@@ -88,7 +89,7 @@ async def on_shutdown(dp):
 if __name__ == "__main__":
     start_webhook(
         dispatcher=dp,
-        webhook_path="",
+        =WEBHOOK_PATH,
         on_startup=on_startup,
         on_shutdown=on_shutdown,
         skip_updates=True,
