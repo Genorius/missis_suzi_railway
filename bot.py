@@ -49,8 +49,7 @@ async def start_handler(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "👋 Привет! Я Missis S'Uzi — помогу узнать статус вашего заказа.\n"
-        "Введите, пожалуйста, ваш bot_code или номер телефона 🤍",
-        reply_markup=get_main_keyboard()
+        "Введите, пожалуйста, ваш bot_code или номер телефона 🤍"
     )
     await state.set_state(AuthStates.waiting_for_code)
 
@@ -60,8 +59,7 @@ async def process_auth(message: types.Message, state: FSMContext):
     order = pick_order_by_code_or_phone(code_or_phone)
     if not order:
         await message.answer(
-            "❌ Не удалось найти заказ по введённым данным. Проверьте bot_code или телефон и попробуйте снова.",
-            reply_markup=get_main_keyboard()
+            "❌ Не удалось найти заказ по введённым данным. Проверьте bot_code или телефон и попробуйте снова."
         )
         return
 
@@ -74,43 +72,47 @@ async def process_auth(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("✅ Авторизация успешна! Что хотите узнать?", reply_markup=get_main_keyboard())
 
+async def ensure_authorized(callback: types.CallbackQuery, state: FSMContext) -> bool:
+    data = await state.get_data()
+    if not data.get("order_id"):
+        await callback.message.answer(
+            "Чтобы продолжить, пожалуйста, введите ваш bot_code или номер телефона 🤍"
+        )
+        await state.set_state(AuthStates.waiting_for_code)
+        await callback.answer()
+        return False
+    return True
+
 @dp.callback_query(F.data == "status")
 async def order_status_handler(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    order_id = data.get("order_id")
-    if not order_id:
-        await callback.message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍", reply_markup=get_main_keyboard())
-        await callback.answer()
+    if not await ensure_authorized(callback, state):
         return
+    data = await state.get_data()
+    order_id = data["order_id"]
     text = get_order_status_text_by_id(order_id)
     await callback.message.answer(text, reply_markup=get_main_keyboard())
     await callback.answer()
 
 @dp.callback_query(F.data == "track")
 async def tracking_handler(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    order_id = data.get("order_id")
-    if not order_id:
-        await callback.message.answer("📦 Трек-номер пока не присвоен, но я дам знать, как только он появится 🤍", reply_markup=get_main_keyboard())
-        await callback.answer()
+    if not await ensure_authorized(callback, state):
         return
+    data = await state.get_data()
+    order_id = data["order_id"]
     text = get_tracking_number_text_by_id(order_id)
     await callback.message.answer(text, reply_markup=get_main_keyboard())
     await callback.answer()
 
 @dp.callback_query(F.data == "orders")
 async def orders_handler(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    order_id = data.get("order_id")
-    customer_id = data.get("customer_id")
-    if not order_id:
-        await callback.message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍", reply_markup=get_main_keyboard())
-        await callback.answer()
+    if not await ensure_authorized(callback, state):
         return
+    data = await state.get_data()
+    customer_id = data.get("customer_id")
     if customer_id:
         text = get_orders_list_text_by_customer_id(customer_id)
     else:
-        o = get_order_by_id(order_id)
+        o = get_order_by_id(data["order_id"])
         status = o.get("statusComment") or o.get("status") or "Без статуса"
         text = f"📋 Ваши заказы:\n— #{o.get('number')} ({status})"
     await callback.message.answer(text, reply_markup=get_main_keyboard())
@@ -118,9 +120,13 @@ async def orders_handler(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "support")
 async def support_handler(callback: types.CallbackQuery, state: FSMContext):
+    if not await ensure_authorized(callback, state):
+        return
     await state.set_state(AuthStates.waiting_support_message)
-    await callback.message.answer("💬 Напишите, пожалуйста, ваш вопрос одним сообщением — я всё передам администратору 🤍",
-                                  reply_markup=get_main_keyboard())
+    await callback.message.answer(
+        "💬 Напишите, пожалуйста, ваш вопрос одним сообщением — я всё передам администратору 🤍",
+        reply_markup=get_main_keyboard()
+    )
     await callback.answer()
 
 @dp.message(StateFilter(AuthStates.waiting_support_message))
