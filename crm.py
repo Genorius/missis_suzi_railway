@@ -21,7 +21,6 @@ async def _post(session: aiohttp.ClientSession, path: str, json_body: Dict[str, 
     if not CRM_URL or not CRM_API_KEY:
         raise CRMError("CRM not configured")
     url = f"{CRM_URL}{path}"
-    # RetailCRM v5 обычно принимает apiKey в query, но часть методов допускают в теле.
     async with session.post(url, params={"apiKey": CRM_API_KEY}, json=json_body, timeout=20) as resp:
         if resp.status >= 400:
             txt = await resp.text()
@@ -51,12 +50,8 @@ async def get_order_by_id(order_id: str) -> Optional[Dict[str, Any]]:
         return orders[0] if orders else None
 
 async def patch_order_comment(order_id: str, comment: str) -> bool:
-    # Сохраняем отзыв в customFields.comments
     async with aiohttp.ClientSession() as s:
-        payload = {
-            "order": {"customFields": {"comments": comment}},
-            "by": "externalId",
-        }
+        payload = {"order": {"customFields": {"comments": comment}}, "by": "externalId"}
         try:
             await _post(s, f"/api/v5/orders/{order_id}/edit", payload)
             return True

@@ -1,4 +1,4 @@
-import os
+import logging
 from typing import List, Dict, Any
 
 from aiogram import Bot, Dispatcher, types
@@ -12,8 +12,16 @@ from config import TELEGRAM_BOT_TOKEN, WEBHOOK_URL, PORT, USE_WEBHOOK, ADMIN_CHA
 from utils import normalize_phone, human_status
 from crm import fetch_orders_by_bot_code, fetch_orders_by_phone, get_order_by_id, patch_order_comment
 
-# Простейшее хранение авторизации в памяти процесса (для стабильного прод лучше Redis)
+# logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("missis_suzi_bot")
+
+# In-memory auth (для простоты и стабильного старта)
 AUTH: Dict[int, Dict[str, str]] = {}
+
+# Safety check for token
+if not TELEGRAM_BOT_TOKEN or ":" not in TELEGRAM_BOT_TOKEN:
+    raise SystemExit("TELEGRAM_BOT_TOKEN пустой/неверный. Задайте корректный токен в переменных окружения.")
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot, storage=MemoryStorage())
@@ -27,6 +35,8 @@ class SupportStates(StatesGroup):
 class ReviewStates(StatesGroup):
     waiting_stars = State()
     waiting_comment = State()
+
+WEBHOOK_PATH = "/telegram"  # фиксированный путь вебхука
 
 def kb_start() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
@@ -70,27 +80,20 @@ async def cb_auth_input(message: types.Message, state: FSMContext):
     text = (message.text or "").strip()
     orders: List[Dict[str, Any]] = []
 
-    # Пытаемся как телефон
     phone = normalize_phone(text)
     if phone:
         orders = await fetch_orders_by_phone(phone)
     else:
-        # Иначе — как bot_code
         orders = await fetch_orders_by_bot_code(text)
 
     if not orders:
         await message.answer("Не нашла заказов по этим данным. Проверьте и отправьте ещё раз.")
         return
 
-    # Берём первый (обычно самый свежий)
     order = orders[0]
     order_id = str(order.get("id") or order.get("externalId") or order.get("number"))
 
-    AUTH[message.from_user.id] = {
-        "order_id": order_id,
-        "phone": phone or "",
-        "code": "" if phone else text
-    }
+    AUTH[message.from_user.id] = {"order_id": order_id, "phone": phone or "", "code": "" if phone else text}
 
     await state.finish()
     await message.answer("Готово! Доступ открыт ✅", reply_markup=kb_main())
@@ -144,7 +147,6 @@ async def cb_orders(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer("Пожалуйста, сначала авторизуйтесь.", reply_markup=kb_start())
         return await callback.answer()
 
-    # Покажем краткий список (без пагинации, минимально)
     phone = AUTH[uid].get("phone") or ""
     code = AUTH[uid].get("code") or ""
     orders = []
@@ -194,13 +196,7 @@ async def support_relay(message: types.Message, state: FSMContext):
 async def cmd_review(message: types.Message, state: FSMContext):
     if _need_auth(message.from_user.id):
         return await message.reply("Пожалуйста, сначала авторизуйтесь.", reply_markup=kb_start())
-    await message.answer("Оцените, пожалуйста, заказ.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="★", callback_data="star:1"),
-        InlineKeyboardButton(text="★★", callback_data="star:2"),
-        InlineKeyboardButton(text="★★★", callback_data="star:3"),
-        InlineKeyboardButton(text="★★★★", callback_data="star:4"),
-        InlineKeyboardButton(text="★★★★★", callback_data="star:5"),
-    ]]))
+    await message.answer("Оцените, пожалуйста, заказ.", reply_markup=kb_stars())
     await ReviewStates.waiting_stars.set()
 
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith("star:"), state=ReviewStates.waiting_stars)
@@ -226,21 +222,25 @@ async def review_comment(message: types.Message, state: FSMContext):
     else:
         await message.answer("Не смогла сохранить отзыв из‑за технической ошибки, но уже передала сигнал. Попробуйте позже.")
 
-# Runner
-WEBHOOK_PATH = "/telegram"
-
+# Startup / Shutdown
 async def on_startup(dp: Dispatcher):
-    if USE_WEBHOOK and WEBHOOK_URL:
-        await bot.set_webhook(WEBHOOK_URL)
+    if USE_WEBHOOK:
+        if not WEBHOOK_URL:
+            log.error("WEBHOOK_URL пустой. Укажите переменную окружения WEBHOOK_URL.")
+            raise SystemExit("WEBHOOK_URL пустой. Укажите переменную окружения WEBHOOK_URL.")
+        final_url = WEBHOOK_URL.rstrip('/') + WEBHOOK_PATH
+        log.info("Устанавливаю вебхук на: %s", final_url)
+        await bot.set_webhook(final_url)
 
 async def on_shutdown(dp: Dispatcher):
     try:
         await bot.delete_webhook()
     except Exception:
         pass
+    log.info("Бот остановлен.")
 
 def main():
-    if USE_WEBHOOK and WEBHOOK_URL:
+    if USE_WEBHOOK:
         start_webhook(
             dispatcher=dp,
             webhook_path=WEBHOOK_PATH,
