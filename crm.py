@@ -1,5 +1,6 @@
 
 import os
+import re
 import requests
 
 API_KEY = os.getenv("CRM_API_KEY", "pDUAhKJaZZlSXnWtSberXS6PCwfiGP4D")
@@ -20,16 +21,36 @@ def crm_post(endpoint, payload=None, params=None):
     r.raise_for_status()
     return r.json()
 
+def _normalize_phone(s: str) -> str:
+    # Оставляем только цифры и ведущий +
+    s = s.strip()
+    if not s:
+        return s
+    plus = s.startswith("+")
+    digits = "".join(ch for ch in s if ch.isdigit())
+    return ("+" + digits) if plus else digits
+
 def pick_order_by_code_or_phone(code_or_phone: str):
-    # 1) bot_code
-    orders = crm_get("orders", {"customFields[bot_code]": code_or_phone}).get("orders", [])
-    if orders:
-        return orders[0]
-    # 2) phone
-    if code_or_phone and (code_or_phone[0].isdigit() or code_or_phone.startswith("+")):
-        orders = crm_get("orders", {"customer[phone]": code_or_phone}).get("orders", [])
+    # 1) bot_code (как есть)
+    try:
+        orders = crm_get("orders", {"customFields[bot_code]": code_or_phone}).get("orders", [])
         if orders:
             return orders[0]
+    except Exception:
+        # пусть пробует телефон
+        pass
+
+    # 2) phone (нормализуем)
+    phone = _normalize_phone(code_or_phone)
+    if phone:
+        orders = crm_get("orders", {"customer[phone]": phone}).get("orders", [])
+        if not orders and phone.startswith("8") and len(phone) >= 10:
+            # Попробуем как +7
+            alt = "+7" + phone[1:]
+            orders = crm_get("orders", {"customer[phone]": alt}).get("orders", [])
+        if orders:
+            return orders[0]
+
     return None
 
 def get_order_by_id(order_id: int):
@@ -40,10 +61,6 @@ def save_telegram_id_for_order(order_id: int, telegram_id: int, site: str | None
     payload = {"by": "id", "order": {"customFields": {"telegram_id": str(telegram_id)}}}
     if site:
         payload["site"] = site
-    crm_post(f"orders/{order_id}/edit", payload)
-
-def clear_telegram_id_for_order(order_id: int):
-    payload = {"by": "id", "order": {"customFields": {"telegram_id": ""}}}
     crm_post(f"orders/{order_id}/edit", payload)
 
 def get_order_status_text_by_id(order_id: int):
@@ -59,11 +76,7 @@ def get_tracking_number_text_by_id(order_id: int):
     if not o:
         return "📦 Трек-номер пока не присвоен, но я дам знать, как только он появится 🤍"
     delivery = o.get("delivery") or {}
-    # Основное поле
-    track_num = delivery.get("number")
-    # Фоллбеки
-    if not track_num:
-        track_num = delivery.get("trackNumber") or delivery.get("track_number")
+    track_num = delivery.get("number") or delivery.get("trackNumber") or delivery.get("track_number")
     if not track_num:
         tracks = delivery.get("tracks") or []
         if isinstance(tracks, list) and tracks:

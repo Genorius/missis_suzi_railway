@@ -17,8 +17,7 @@ from crm import (
     get_tracking_number_text_by_id,
     get_orders_list_text_by_customer_id,
     save_review_by_order_id,
-    save_telegram_id_for_order,
-    clear_telegram_id_for_order
+    save_telegram_id_for_order
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -60,18 +59,24 @@ async def logout_handler(message: types.Message, state: FSMContext):
     await message.answer("Вы вышли из авторизации. Введите bot_code или номер телефона, чтобы продолжить 🤍")
     await state.set_state(AuthStates.waiting_for_code)
 
-@dp.message(Command("debug"))
-async def debug_handler(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    await message.answer(f"debug:\nstate={await state.get_state()}\norder_id={data.get('order_id')}\ncustomer_id={data.get('customer_id')}")
-
 @dp.message(StateFilter(AuthStates.waiting_for_code))
 async def process_auth(message: types.Message, state: FSMContext):
     code_or_phone = (message.text or "").strip()
-    order = pick_order_by_code_or_phone(code_or_phone)
+    if not code_or_phone:
+        await message.answer("Введите, пожалуйста, bot_code или номер телефона 🤍")
+        return
+
+    try:
+        order = pick_order_by_code_or_phone(code_or_phone)
+    except Exception as e:
+        logging.exception("Auth CRM error: %s", e)
+        await message.answer("Сейчас не получается подключиться к CRM. Попробуйте ещё раз через минуту 🤍")
+        return
+
     if not order:
         await message.answer(
-            "❌ Не удалось найти заказ по введённым данным. Проверьте bot_code или телефон и попробуйте снова."
+            "❌ Не нашла заказ по введённым данным.\n"
+            "Проверьте bot_code или введите номер телефона в формате +7XXXXXXXXXX 🤍"
         )
         return
 
@@ -81,7 +86,6 @@ async def process_auth(message: types.Message, state: FSMContext):
         logging.warning("Save telegram_id failed: %s", e)
 
     await state.update_data(order_id=order["id"], customer_id=(order.get("customer") or {}).get("id"))
-    # Завершаем состояние, но сохраняем данные
     await state.set_state(None)
 
     await message.answer("✅ Авторизация успешна! Что хотите узнать?", reply_markup=get_main_keyboard())
@@ -160,21 +164,15 @@ async def review_handler(message: types.Message, state: FSMContext):
     await message.answer("Спасибо за ваш отзыв! Нам важно ваше мнение 💬😊", reply_markup=get_main_keyboard())
     await state.set_state(None)
 
-@dp.message(Command("unlink"))
-async def unlink_handler(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("Команда доступна только администратору.")
-        return
-    data = await state.get_data()
-    order_id = data.get("order_id")
-    if not order_id:
-        await message.answer("Нет выбранного заказа в сессии.")
-        return
-    try:
-        clear_telegram_id_for_order(order_id)
-        await message.answer("Привязка telegram_id к заказу очищена.")
-    except Exception as e:
-        await message.answer(f"Ошибка при очистке привязки: {e}")
+# Fallback: если почему-то не сработал фильтр состояния, всё равно обрабатываем ввод bot_code
+@dp.message()
+async def any_text_fallback(message: types.Message, state: FSMContext):
+    curr = await state.get_state()
+    if curr == AuthStates.waiting_for_code.state:
+        await process_auth(message, state)
+    else:
+        # Ничего не делаем, чтобы не мешать другим сценариям
+        pass
 
 async def on_startup(app):
     url = WEBHOOK_URL
