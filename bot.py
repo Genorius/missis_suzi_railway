@@ -66,6 +66,10 @@ async def logout_handler(message: types.Message, state: FSMContext):
     await message.answer("Вы вышли из авторизации. Введите bot_code или номер телефона, чтобы продолжить 🤍")
     await state.set_state(AuthStates.waiting_for_code)
 
+@dp.message(Command("myid"))
+async def myid_handler(message: types.Message):
+    await message.answer(f"Ваш chat_id: {message.chat.id}")
+
 @dp.message(Command("debug"))
 async def debug_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -169,7 +173,11 @@ async def support_handler(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(StateFilter(AuthStates.waiting_support_message), F.text)
 async def support_message_receiver(message: types.Message, state: FSMContext):
     uname = f"@{message.from_user.username}" if message.from_user.username else f"id {message.from_user.id}"
-    await bot.send_message(ADMIN_ID, f"🆘 Запрос поддержки от {uname}:\n{message.text}")
+    # Пытаемся отправить админу, но даже при ошибке отвечаем пользователю
+    try:
+        await bot.send_message(ADMIN_ID, f"🆘 Запрос поддержки от {uname}:\n{message.text}")
+    except Exception as e:
+        logging.warning("Failed to deliver support message to ADMIN_ID=%s: %s", ADMIN_ID, e)
     await message.answer("Спасибо! Передала сообщение. Мы ответим как можно скорее 🤍",
                          reply_markup=get_main_keyboard())
     await state.set_state(None)

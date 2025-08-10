@@ -20,6 +20,32 @@ def crm_post(endpoint, payload=None, params=None):
     r.raise_for_status()
     return r.json()
 
+def _extract_track(o: dict) -> str | None:
+    d = (o or {}).get("delivery") or {}
+    cf = (o or {}).get("customFields") or {}
+    candidates = []
+    # direct fields
+    for key in ("number", "trackNumber", "trackingNumber", "track_number", "tracking_number"):
+        candidates.append(d.get(key))
+    # nested delivery.data
+    data = d.get("data") or {}
+    for key in ("number", "trackNumber", "trackingNumber", "track_number", "tracking_number", "barcode"):
+        candidates.append(data.get(key))
+    # delivery.tracks list
+    tracks = d.get("tracks") or []
+    if isinstance(tracks, list):
+        for t in tracks:
+            for key in ("number", "trackNumber", "trackingNumber", "code"):
+                candidates.append((t or {}).get(key))
+    # custom fields fallbacks
+    for key in ("track", "track_number", "tracking_number", "ttn", "awb", "awb_number"):
+        candidates.append(cf.get(key))
+
+    for c in candidates:
+        if isinstance(c, str) and c.strip():
+            return c.strip()
+    return None
+
 def _normalize_phone(s: str) -> str:
     s = (s or "").strip()
     if not s:
@@ -99,13 +125,7 @@ def get_tracking_number_text_by_id(order_id: int):
     o = get_order_by_id(order_id)
     if not o:
         return "📦 Трек-номер пока не присвоен, но я дам знать, как только он появится 🤍"
-    delivery = o.get("delivery") or {}
-    track_num = delivery.get("number") or delivery.get("trackNumber") or delivery.get("track_number")
-    if not track_num:
-        tracks = delivery.get("tracks") or []
-        if isinstance(tracks, list) and tracks:
-            first = tracks[0] or {}
-            track_num = first.get("number") or first.get("trackNumber")
+    track_num = _extract_track(o)
     num = o.get("number", "—")
     if track_num:
         return f"🎯 Заказ #{num}\nВаш трек-номер: {track_num}\nОтследить: https://www.cdek.ru/ru/tracking?order_id={track_num}"
