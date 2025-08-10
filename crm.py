@@ -20,19 +20,61 @@ def crm_post(endpoint, payload=None, params=None):
     r.raise_for_status()
     return r.json()
 
+def _normalize_phone(s: str) -> str:
+    s = (s or "").strip()
+    if not s:
+        return s
+    plus = s.startswith("+")
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if not digits:
+        return ""
+    if plus:
+        return "+" + digits
+    if digits.startswith("8") and len(digits) >= 11:
+        return "+7" + digits[1:]
+    return digits
+
+def _orders_by_bot_code(code: str) -> list:
+    data = crm_get("orders", {
+        "filter[customFields][bot_code]": code,
+        "limit": 20
+    })
+    orders = data.get("orders", []) or []
+    return [o for o in orders if ((o.get("customFields") or {}).get("bot_code") == code)]
+
+def _customers_by_phone(phone: str) -> list:
+    data = crm_get("customers", {"filter[phone]": phone, "limit": 20})
+    customers = data.get("customers", []) or []
+    if customers:
+        return customers
+    data = crm_get("customers", {"filter[name]": phone, "limit": 20})
+    return data.get("customers", []) or []
+
+def _orders_by_customer_id(customer_id: int) -> list:
+    data = crm_get("orders", {"filter[customerId]": customer_id, "limit": 20})
+    return data.get("orders", []) or []
+
 def pick_order_by_code_or_phone(code_or_phone: str):
-    # Сначала bot_code (как есть)
-    orders = crm_get("orders", {"customFields[bot_code]": code_or_phone}).get("orders", [])
-    if orders:
-        return orders[0]
-    # Потом телефон: убираем пробелы/скобки/дефисы и приводим 8... к +7...
-    phone = "".join(ch for ch in code_or_phone if ch.isdigit() or ch == "+")
+    if code_or_phone:
+        by_code = _orders_by_bot_code(code_or_phone)
+        if by_code:
+            by_code.sort(key=lambda o: o.get("createdAt") or "", reverse=True)
+            return by_code[0]
+
+    phone = _normalize_phone(code_or_phone)
     if phone:
-        if phone.startswith("8") and len(phone) >= 11:
-            phone = "+7" + phone[1:]
-        alt_orders = crm_get("orders", {"customer[phone]": phone}).get("orders", [])
-        if alt_orders:
-            return alt_orders[0]
+        customers = _customers_by_phone(phone)
+        if customers:
+            customer = customers[0]
+            cid = customer.get("id")
+            if cid:
+                orders = _orders_by_customer_id(cid)
+                if orders:
+                    orders.sort(key=lambda o: o.get("createdAt") or "", reverse=True)
+                    for o in orders:
+                        cust = o.get("customer") or {}
+                        if cust.get("id") == cid:
+                            return o
     return None
 
 def get_order_by_id(order_id: int):
@@ -72,7 +114,7 @@ def get_tracking_number_text_by_id(order_id: int):
 def get_orders_list_text_by_customer_id(customer_id: int):
     if not customer_id:
         return "📦 Пока нет активных заказов. Я всё проверила 🤍"
-    orders = crm_get("orders", {"customer[id]": customer_id}).get("orders", [])
+    orders = _orders_by_customer_id(customer_id)
     if not orders:
         return "📦 Пока нет активных заказов. Я всё проверила 🤍"
     out = ["📋 Ваши заказы:"]

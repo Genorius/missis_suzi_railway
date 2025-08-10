@@ -20,7 +20,6 @@ from crm import (
     save_telegram_id_for_order
 )
 
-# Verbose logs to see handler flow
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("aiogram").setLevel(logging.DEBUG)
 
@@ -184,7 +183,6 @@ async def review_handler(message: types.Message, state: FSMContext):
     await message.answer("Спасибо за ваш отзыв! Нам важно ваше мнение 💬😊", reply_markup=get_main_keyboard())
     await state.set_state(None)
 
-# SAFETY NET: if user is not authorized but sends text, try to authorize anyway
 @dp.message(F.text)
 async def any_text_fallback(message: types.Message, state: FSMContext):
     current = await state.get_state()
@@ -196,7 +194,6 @@ async def on_startup(app):
     url = WEBHOOK_URL
     if not url.endswith(WEBHOOK_PATH):
         url = url.rstrip("/") + WEBHOOK_PATH
-    # ensure Telegram sends messages and callbacks
     await bot.set_webhook(url, allowed_updates=["message", "callback_query"])
     logging.info("Webhook set to: %s", url)
 
@@ -205,7 +202,6 @@ async def on_shutdown(app):
 
 def main():
     app = web.Application()
-    # listen on both the configured path and root to avoid misconfig issues
     SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
     SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/")
     setup_application(app, dp, bot=bot)
