@@ -1,5 +1,5 @@
 aiogram==3.5.0
-aiohttp
-redis
-requests
-python-dotenv
+aiohttp==3.9.5
+redis==5.0.7
+requests==2.32.3
+python-dotenv==1.0.1

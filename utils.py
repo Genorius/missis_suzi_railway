@@ -1,53 +1,27 @@
-import aiohttp
-from config import API_KEY, CRM_URL
+import re
 
-if not API_KEY:
-    raise ValueError("❌ API_KEY не задан! Проверь переменные окружения.")
+def normalize_phone(phone: str) -> str:
+    # Keep only digits, allow + at start
+    p = re.sub(r"[^0-9+]", "", phone or "")
+    # Convert leading 8 to +7 (RU common)
+    if p.startswith("8") and len(p) in (11, 12):
+        p = "+7" + p[1:]
+    if p.startswith("7") and len(p) == 11:
+        p = "+" + p
+    if p and not p.startswith("+"):
+        # if it's clearly a phone (10-12 digits), prepend +
+        digits = re.sub(r"\D", "", p)
+        if 10 <= len(digits) <= 12:
+            p = "+" + digits
+    return p
 
-headers = {
-    "Content-Type": "application/json",
-    "X-API-KEY": API_KEY
-}
+def is_probably_phone(text: str) -> bool:
+    digits = re.sub(r"\D", "", text or "")
+    return len(digits) >= 10
 
-async def get_order_by_bot_code_or_phone(code):
-    if code.startswith("+") or code.isdigit():
-        query = f'{CRM_URL}/api/v5/orders?customer[phone]={code}'
-    else:
-        query = f'{CRM_URL}/api/v5/orders?customFields[bot_code]={code}'
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(query, headers=headers) as response:
-            data = await response.json()
-            return data.get("orders", [None])[0]
-
-async def get_status_text(order_id):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"{CRM_URL}/api/v5/orders/{order_id}", headers=headers) as resp:
-            data = await resp.json()
-            status = data["order"].get("status", "Неизвестно")
-            return f"📦 Текущий статус: <b>{status}</b>"
-
-async def get_track_text(order_id):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"{CRM_URL}/api/v5/orders/{order_id}", headers=headers) as resp:
-            data = await resp.json()
-            delivery = data["order"].get("delivery", {})
-            number = delivery.get("number")
-            if number:
-                return f"🔍 Трек-номер: <b>{number}</b>\nОтследить: https://cdek.ru/tracking"
-            return "⏳ Трек-номер ещё не присвоен, но мы обязательно сообщим вам!"
-
-async def get_orders(order_id):
-    return f"📋 Это ваш заказ: #{order_id}"
-
-async def save_review_to_crm(order_id, stars, comment=None):
-    payload = {
-        "order": {
-            "customFields": {
-                "rating": stars,
-                "comments": comment or ""
-            }
-        }
-    }
-    async with aiohttp.ClientSession() as session:
-        await session.post(f"{CRM_URL}/api/v5/orders/{order_id}/edit", json=payload, headers=headers)
+def extract_stars_from_callback(data: str) -> int | None:
+    m = re.match(r"star:(\d)", data or "")
+    if not m:
+        return None
+    val = int(m.group(1))
+    return val if 1 <= val <= 5 else None

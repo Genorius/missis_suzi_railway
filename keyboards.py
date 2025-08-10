@@ -17,9 +17,11 @@ def get_orders_keyboard():
 
 def get_stars_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐1", callback_data="⭐1"),
-         InlineKeyboardButton(text="⭐2", callback_data="⭐2"),
-         InlineKeyboardButton(text="⭐3", callback_data="⭐3"),
-         InlineKeyboardButton(text="⭐4", callback_data="⭐4"),
-         InlineKeyboardButton(text="⭐5", callback_data="⭐5")]
+        [
+            InlineKeyboardButton(text="⭐1", callback_data="star:1"),
+            InlineKeyboardButton(text="⭐2", callback_data="star:2"),
+            InlineKeyboardButton(text="⭐3", callback_data="star:3"),
+            InlineKeyboardButton(text="⭐4", callback_data="star:4"),
+            InlineKeyboardButton(text="⭐5", callback_data="star:5"),
+        ]
     ])
