@@ -2,7 +2,7 @@
 import os
 import logging
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -20,7 +20,9 @@ from crm import (
     save_telegram_id_for_order
 )
 
+# Verbose logs to see handler flow
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("aiogram").setLevel(logging.DEBUG)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
@@ -48,8 +50,9 @@ async def is_authed(state: FSMContext) -> bool:
     data = await state.get_data()
     return bool(data.get("order_id"))
 
-@dp.message(Command("start"))
+@dp.message(CommandStart())
 async def start_handler(message: types.Message, state: FSMContext):
+    logging.info("START from %s", message.from_user.id)
     await state.clear()
     await message.answer(
         "👋 Привет! Я Missis S'Uzi — помогу узнать статус вашего заказа.\n"
@@ -59,6 +62,7 @@ async def start_handler(message: types.Message, state: FSMContext):
 
 @dp.message(Command("logout"))
 async def logout_handler(message: types.Message, state: FSMContext):
+    logging.info("LOGOUT by %s", message.from_user.id)
     await state.clear()
     await message.answer("Вы вышли из авторизации. Введите bot_code или номер телефона, чтобы продолжить 🤍")
     await state.set_state(AuthStates.waiting_for_code)
@@ -66,11 +70,16 @@ async def logout_handler(message: types.Message, state: FSMContext):
 @dp.message(Command("debug"))
 async def debug_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    await message.answer(f"debug:\nstate={await state.get_state()}\nauthed={await is_authed(state)}\norder_id={data.get('order_id')}\ncustomer_id={data.get('customer_id')}")
+    await message.answer(
+        f"debug:\nstate={await state.get_state()}\n"
+        f"authed={await is_authed(state)}\n"
+        f"order_id={data.get('order_id')}\ncustomer_id={data.get('customer_id')}"
+    )
 
-@dp.message(StateFilter(AuthStates.waiting_for_code))
+@dp.message(StateFilter(AuthStates.waiting_for_code), F.text)
 async def process_auth(message: types.Message, state: FSMContext):
     code_or_phone = (message.text or "").strip()
+    logging.info("AUTH attempt from %s: %s", message.from_user.id, code_or_phone)
     if not code_or_phone:
         await message.answer("Введите, пожалуйста, bot_code или номер телефона 🤍")
         return
@@ -85,6 +94,7 @@ async def process_auth(message: types.Message, state: FSMContext):
         return
 
     if not order:
+        logging.info("AUTH not found for %s", message.from_user.id)
         await message.answer(
             "❌ Не нашла заказ по введённым данным.\n"
             "Проверьте bot_code или введите номер телефона в формате +7XXXXXXXXXX 🤍"
@@ -157,7 +167,7 @@ async def support_handler(callback: types.CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
-@dp.message(StateFilter(AuthStates.waiting_support_message))
+@dp.message(StateFilter(AuthStates.waiting_support_message), F.text)
 async def support_message_receiver(message: types.Message, state: FSMContext):
     uname = f"@{message.from_user.username}" if message.from_user.username else f"id {message.from_user.id}"
     await bot.send_message(ADMIN_ID, f"🆘 Запрос поддержки от {uname}:\n{message.text}")
@@ -165,7 +175,7 @@ async def support_message_receiver(message: types.Message, state: FSMContext):
                          reply_markup=get_main_keyboard())
     await state.set_state(None)
 
-@dp.message(StateFilter(AuthStates.waiting_for_review))
+@dp.message(StateFilter(AuthStates.waiting_for_review), F.text)
 async def review_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
     order_id = data.get("order_id")
@@ -174,26 +184,30 @@ async def review_handler(message: types.Message, state: FSMContext):
     await message.answer("Спасибо за ваш отзыв! Нам важно ваше мнение 💬😊", reply_markup=get_main_keyboard())
     await state.set_state(None)
 
-# Fallback: если state не подтянулся по какой-то причине,
-# но пользователь не авторизован — пробуем интерпретировать текст как bot_code/телефон.
+# SAFETY NET: if user is not authorized but sends text, try to authorize anyway
 @dp.message(F.text)
 async def any_text_fallback(message: types.Message, state: FSMContext):
+    current = await state.get_state()
+    logging.debug("Fallback text from %s, state=%s", message.from_user.id, current)
     if not await is_authed(state):
         await process_auth(message, state)
-    # иначе молча игнорируем, чтобы не ломать другие сценарии
 
 async def on_startup(app):
     url = WEBHOOK_URL
     if not url.endswith(WEBHOOK_PATH):
         url = url.rstrip("/") + WEBHOOK_PATH
-    await bot.set_webhook(url)
+    # ensure Telegram sends messages and callbacks
+    await bot.set_webhook(url, allowed_updates=["message", "callback_query"])
+    logging.info("Webhook set to: %s", url)
 
 async def on_shutdown(app):
     await bot.delete_webhook()
 
 def main():
     app = web.Application()
+    # listen on both the configured path and root to avoid misconfig issues
     SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/")
     setup_application(app, dp, bot=bot)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
