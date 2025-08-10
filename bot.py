@@ -1,6 +1,7 @@
 import os
 import logging
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -44,10 +45,11 @@ def get_main_keyboard():
     ])
 
 # /start
-@dp.message(commands=["start"])
+@dp.message(Command("start"))
 async def start_handler(message: types.Message, state: FSMContext):
     await message.answer(
-        "👋 Привет! Я Missis S’Uzi — помогу узнать статус вашего заказа.\n"
+        "👋 Привет! Я Missis S’Uzi — помогу узнать статус вашего заказа.
+"
         "Введите, пожалуйста, ваш bot_code или номер телефона 🤍"
     )
     await state.set_state(AuthStates.waiting_for_code)
@@ -65,25 +67,25 @@ async def process_auth(message: types.Message, state: FSMContext):
         await message.answer("❌ Не удалось найти заказ. Проверьте введённые данные и попробуйте снова.")
 
 # Статус
-@dp.callback_query(lambda c: c.data == "status")
+@dp.callback_query(F.data == "status")
 async def order_status_handler(callback: types.CallbackQuery):
     status_text = get_order_status_text(callback.from_user.id)
     await callback.message.answer(status_text)
 
 # Трек
-@dp.callback_query(lambda c: c.data == "track")
+@dp.callback_query(F.data == "track")
 async def tracking_handler(callback: types.CallbackQuery):
     track_text = get_tracking_number_text(callback.from_user.id)
     await callback.message.answer(track_text)
 
 # Заказы
-@dp.callback_query(lambda c: c.data == "orders")
+@dp.callback_query(F.data == "orders")
 async def orders_handler(callback: types.CallbackQuery):
     orders_text = get_orders_list_text(callback.from_user.id)
     await callback.message.answer(orders_text)
 
 # Поддержка
-@dp.callback_query(lambda c: c.data == "support")
+@dp.callback_query(F.data == "support")
 async def support_handler(callback: types.CallbackQuery):
     await callback.message.answer("💬 Пожалуйста, напишите свой вопрос, и мы ответим как можно скорее 🤍")
     await bot.send_message(ADMIN_ID, f"Запрос поддержки от @{callback.from_user.username} (ID {callback.from_user.id})")
