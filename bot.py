@@ -57,11 +57,10 @@ async def cmd_start(message: types.Message, state: FSMContext):
     if is_authorized(message.from_user.id):
         await message.answer("Готова помочь по вашему заказу. Выберите действие:", reply_markup=get_main_keyboard())
     else:
-        await message.answer(
-            "Для доступа к статусу, треку и заказам — авторизуйтесь.
-"
-            "Введите <b>bot_code</b> или <b>номер телефона</b> (в любом читаемом формате).",
-        )
+  await message.answer(
+    "Для доступа к статусу, треку и заказам — авторизуйтесь.\n"
+    "Введите <b>bot_code</b> или <b>номер телефона</b> (в любом читаемом формате)."
+)
         await state.set_state(AuthState.waiting_input)
 
 @dp.message(AuthState.waiting_input)
