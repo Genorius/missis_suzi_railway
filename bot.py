@@ -1,7 +1,8 @@
+
 import os
 import logging
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -11,31 +12,30 @@ from aiohttp import web
 
 from crm import (
     pick_order_by_code_or_phone,
-    get_order_status_text,
-    get_tracking_number_text,
-    get_orders_list_text,
-    save_review
+    get_order_by_id,
+    get_order_status_text_by_id,
+    get_tracking_number_text_by_id,
+    get_orders_list_text_by_customer_id,
+    save_review_by_order_id,
+    save_telegram_id_for_order
 )
 
-# Логирование
 logging.basicConfig(level=logging.INFO)
 
-# Конфиг
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8080))
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))  # заменишь на свой
+ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# FSM
 class AuthStates(StatesGroup):
     waiting_for_code = State()
     waiting_for_review = State()
+    waiting_support_message = State()
 
-# Кнопки
 def get_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📦 Статус отправления", callback_data="status")],
@@ -44,65 +44,107 @@ def get_main_keyboard():
         [InlineKeyboardButton(text="💬 Поддержка", callback_data="support")]
     ])
 
-# /start
 @dp.message(Command("start"))
 async def start_handler(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer(
         "👋 Привет! Я Missis S'Uzi — помогу узнать статус вашего заказа.\n"
-        "Введите, пожалуйста, ваш bot_code или номер телефона 🤍"
+        "Введите, пожалуйста, ваш bot_code или номер телефона 🤍",
+        reply_markup=get_main_keyboard()
     )
     await state.set_state(AuthStates.waiting_for_code)
 
-# Авторизация
-@dp.message(AuthStates.waiting_for_code)
+@dp.message(StateFilter(AuthStates.waiting_for_code))
 async def process_auth(message: types.Message, state: FSMContext):
-    code_or_phone = message.text.strip()
-    order = pick_order_by_code_or_phone(code_or_phone, telegram_id=message.from_user.id)
+    code_or_phone = (message.text or "").strip()
+    order = pick_order_by_code_or_phone(code_or_phone)
+    if not order:
+        await message.answer(
+            "❌ Не удалось найти заказ по введённым данным. Проверьте bot_code или телефон и попробуйте снова.",
+            reply_markup=get_main_keyboard()
+        )
+        return
 
-    if order:
-        await state.clear()
-        await message.answer("✅ Авторизация успешна! Что хотите узнать?", reply_markup=get_main_keyboard())
-    else:
-        await message.answer("❌ Не удалось найти заказ. Проверьте введённые данные и попробуйте снова.")
+    try:
+        save_telegram_id_for_order(order["id"], message.from_user.id, site=order.get("site"))
+    except Exception as e:
+        logging.warning("Save telegram_id failed: %s", e)
 
-# Статус
+    await state.update_data(order_id=order["id"], customer_id=(order.get("customer") or {}).get("id"))
+    await state.clear()
+    await message.answer("✅ Авторизация успешна! Что хотите узнать?", reply_markup=get_main_keyboard())
+
 @dp.callback_query(F.data == "status")
-async def order_status_handler(callback: types.CallbackQuery):
-    status_text = get_order_status_text(callback.from_user.id)
-    await callback.message.answer(status_text)
+async def order_status_handler(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    if not order_id:
+        await callback.message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍", reply_markup=get_main_keyboard())
+        await callback.answer()
+        return
+    text = get_order_status_text_by_id(order_id)
+    await callback.message.answer(text, reply_markup=get_main_keyboard())
     await callback.answer()
 
-# Трек
 @dp.callback_query(F.data == "track")
-async def tracking_handler(callback: types.CallbackQuery):
-    track_text = get_tracking_number_text(callback.from_user.id)
-    await callback.message.answer(track_text)
+async def tracking_handler(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    if not order_id:
+        await callback.message.answer("📦 Трек-номер пока не присвоен, но я дам знать, как только он появится 🤍", reply_markup=get_main_keyboard())
+        await callback.answer()
+        return
+    text = get_tracking_number_text_by_id(order_id)
+    await callback.message.answer(text, reply_markup=get_main_keyboard())
     await callback.answer()
 
-# Заказы
 @dp.callback_query(F.data == "orders")
-async def orders_handler(callback: types.CallbackQuery):
-    orders_text = get_orders_list_text(callback.from_user.id)
-    await callback.message.answer(orders_text)
+async def orders_handler(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    customer_id = data.get("customer_id")
+    if not order_id:
+        await callback.message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍", reply_markup=get_main_keyboard())
+        await callback.answer()
+        return
+    if customer_id:
+        text = get_orders_list_text_by_customer_id(customer_id)
+    else:
+        o = get_order_by_id(order_id)
+        status = o.get("statusComment") or o.get("status") or "Без статуса"
+        text = f"📋 Ваши заказы:\n— #{o.get('number')} ({status})"
+    await callback.message.answer(text, reply_markup=get_main_keyboard())
     await callback.answer()
 
-# Поддержка
 @dp.callback_query(F.data == "support")
-async def support_handler(callback: types.CallbackQuery):
-    await callback.message.answer("💬 Пожалуйста, напишите свой вопрос, и мы ответим как можно скорее 🤍")
-    await bot.send_message(ADMIN_ID, f"Запрос поддержки от @{callback.from_user.username} (ID {callback.from_user.id})")
+async def support_handler(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AuthStates.waiting_support_message)
+    await callback.message.answer("💬 Напишите, пожалуйста, ваш вопрос одним сообщением — я всё передам администратору 🤍",
+                                  reply_markup=get_main_keyboard())
     await callback.answer()
 
-# Отзыв
-@dp.message(AuthStates.waiting_for_review)
-async def review_handler(message: types.Message, state: FSMContext):
-    save_review(message.from_user.id, message.text)
-    await message.answer("Спасибо за ваш отзыв! Нам важно ваше мнение 💬😊")
+@dp.message(StateFilter(AuthStates.waiting_support_message))
+async def support_message_receiver(message: types.Message, state: FSMContext):
+    uname = f"@{message.from_user.username}" if message.from_user.username else f"id {message.from_user.id}"
+    await bot.send_message(ADMIN_ID, f"🆘 Запрос поддержки от {uname}:\n{message.text}")
+    await message.answer("Спасибо! Передала сообщение. Мы ответим как можно скорее 🤍",
+                         reply_markup=get_main_keyboard())
     await state.clear()
 
-# Webhook запуск
+@dp.message(StateFilter(AuthStates.waiting_for_review))
+async def review_handler(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    if order_id:
+        save_review_by_order_id(order_id, message.text)
+    await message.answer("Спасибо за ваш отзыв! Нам важно ваше мнение 💬😊", reply_markup=get_main_keyboard())
+    await state.clear()
+
 async def on_startup(app):
-    await bot.set_webhook(WEBHOOK_URL)
+    url = WEBHOOK_URL
+    if not url.endswith(WEBHOOK_PATH):
+        url = url.rstrip("/") + WEBHOOK_PATH
+    await bot.set_webhook(url)
 
 async def on_shutdown(app):
     await bot.delete_webhook()
