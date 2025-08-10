@@ -17,7 +17,8 @@ from crm import (
     get_tracking_number_text_by_id,
     get_orders_list_text_by_customer_id,
     save_review_by_order_id,
-    save_telegram_id_for_order
+    save_telegram_id_for_order,
+    clear_telegram_id_for_order
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +54,17 @@ async def start_handler(message: types.Message, state: FSMContext):
     )
     await state.set_state(AuthStates.waiting_for_code)
 
+@dp.message(Command("logout"))
+async def logout_handler(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Вы вышли из авторизации. Введите bot_code или номер телефона, чтобы продолжить 🤍")
+    await state.set_state(AuthStates.waiting_for_code)
+
+@dp.message(Command("debug"))
+async def debug_handler(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    await message.answer(f"debug:\nstate={await state.get_state()}\norder_id={data.get('order_id')}\ncustomer_id={data.get('customer_id')}")
+
 @dp.message(StateFilter(AuthStates.waiting_for_code))
 async def process_auth(message: types.Message, state: FSMContext):
     code_or_phone = (message.text or "").strip()
@@ -69,7 +81,9 @@ async def process_auth(message: types.Message, state: FSMContext):
         logging.warning("Save telegram_id failed: %s", e)
 
     await state.update_data(order_id=order["id"], customer_id=(order.get("customer") or {}).get("id"))
-    await state.clear()
+    # Завершаем состояние, но сохраняем данные
+    await state.set_state(None)
+
     await message.answer("✅ Авторизация успешна! Что хотите узнать?", reply_markup=get_main_keyboard())
 
 async def ensure_authorized(callback: types.CallbackQuery, state: FSMContext) -> bool:
@@ -135,7 +149,7 @@ async def support_message_receiver(message: types.Message, state: FSMContext):
     await bot.send_message(ADMIN_ID, f"🆘 Запрос поддержки от {uname}:\n{message.text}")
     await message.answer("Спасибо! Передала сообщение. Мы ответим как можно скорее 🤍",
                          reply_markup=get_main_keyboard())
-    await state.clear()
+    await state.set_state(None)
 
 @dp.message(StateFilter(AuthStates.waiting_for_review))
 async def review_handler(message: types.Message, state: FSMContext):
@@ -144,7 +158,23 @@ async def review_handler(message: types.Message, state: FSMContext):
     if order_id:
         save_review_by_order_id(order_id, message.text)
     await message.answer("Спасибо за ваш отзыв! Нам важно ваше мнение 💬😊", reply_markup=get_main_keyboard())
-    await state.clear()
+    await state.set_state(None)
+
+@dp.message(Command("unlink"))
+async def unlink_handler(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Команда доступна только администратору.")
+        return
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    if not order_id:
+        await message.answer("Нет выбранного заказа в сессии.")
+        return
+    try:
+        clear_telegram_id_for_order(order_id)
+        await message.answer("Привязка telegram_id к заказу очищена.")
+    except Exception as e:
+        await message.answer(f"Ошибка при очистке привязки: {e}")
 
 async def on_startup(app):
     url = WEBHOOK_URL

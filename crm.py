@@ -42,6 +42,10 @@ def save_telegram_id_for_order(order_id: int, telegram_id: int, site: str | None
         payload["site"] = site
     crm_post(f"orders/{order_id}/edit", payload)
 
+def clear_telegram_id_for_order(order_id: int):
+    payload = {"by": "id", "order": {"customFields": {"telegram_id": ""}}}
+    crm_post(f"orders/{order_id}/edit", payload)
+
 def get_order_status_text_by_id(order_id: int):
     o = get_order_by_id(order_id)
     if not o:
@@ -55,7 +59,16 @@ def get_tracking_number_text_by_id(order_id: int):
     if not o:
         return "📦 Трек-номер пока не присвоен, но я дам знать, как только он появится 🤍"
     delivery = o.get("delivery") or {}
+    # Основное поле
     track_num = delivery.get("number")
+    # Фоллбеки
+    if not track_num:
+        track_num = delivery.get("trackNumber") or delivery.get("track_number")
+    if not track_num:
+        tracks = delivery.get("tracks") or []
+        if isinstance(tracks, list) and tracks:
+            first = tracks[0] or {}
+            track_num = first.get("number") or first.get("trackNumber")
     num = o.get("number", "—")
     if track_num:
         return f"🎯 Заказ #{num}\nВаш трек-номер: {track_num}\nОтследить: https://www.cdek.ru/ru/tracking?order_id={track_num}"
