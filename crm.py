@@ -1,6 +1,5 @@
 
 import os
-import re
 import requests
 
 API_KEY = os.getenv("CRM_API_KEY", "pDUAhKJaZZlSXnWtSberXS6PCwfiGP4D")
@@ -21,36 +20,19 @@ def crm_post(endpoint, payload=None, params=None):
     r.raise_for_status()
     return r.json()
 
-def _normalize_phone(s: str) -> str:
-    # Оставляем только цифры и ведущий +
-    s = s.strip()
-    if not s:
-        return s
-    plus = s.startswith("+")
-    digits = "".join(ch for ch in s if ch.isdigit())
-    return ("+" + digits) if plus else digits
-
 def pick_order_by_code_or_phone(code_or_phone: str):
-    # 1) bot_code (как есть)
-    try:
-        orders = crm_get("orders", {"customFields[bot_code]": code_or_phone}).get("orders", [])
-        if orders:
-            return orders[0]
-    except Exception:
-        # пусть пробует телефон
-        pass
-
-    # 2) phone (нормализуем)
-    phone = _normalize_phone(code_or_phone)
+    # Сначала bot_code (как есть)
+    orders = crm_get("orders", {"customFields[bot_code]": code_or_phone}).get("orders", [])
+    if orders:
+        return orders[0]
+    # Потом телефон: убираем пробелы/скобки/дефисы и приводим 8... к +7...
+    phone = "".join(ch for ch in code_or_phone if ch.isdigit() or ch == "+")
     if phone:
-        orders = crm_get("orders", {"customer[phone]": phone}).get("orders", [])
-        if not orders and phone.startswith("8") and len(phone) >= 10:
-            # Попробуем как +7
-            alt = "+7" + phone[1:]
-            orders = crm_get("orders", {"customer[phone]": alt}).get("orders", [])
-        if orders:
-            return orders[0]
-
+        if phone.startswith("8") and len(phone) >= 11:
+            phone = "+7" + phone[1:]
+        alt_orders = crm_get("orders", {"customer[phone]": phone}).get("orders", [])
+        if alt_orders:
+            return alt_orders[0]
     return None
 
 def get_order_by_id(order_id: int):

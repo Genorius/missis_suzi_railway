@@ -44,6 +44,10 @@ def get_main_keyboard():
         [InlineKeyboardButton(text="💬 Поддержка", callback_data="support")]
     ])
 
+async def is_authed(state: FSMContext) -> bool:
+    data = await state.get_data()
+    return bool(data.get("order_id"))
+
 @dp.message(Command("start"))
 async def start_handler(message: types.Message, state: FSMContext):
     await state.clear()
@@ -59,12 +63,19 @@ async def logout_handler(message: types.Message, state: FSMContext):
     await message.answer("Вы вышли из авторизации. Введите bot_code или номер телефона, чтобы продолжить 🤍")
     await state.set_state(AuthStates.waiting_for_code)
 
+@dp.message(Command("debug"))
+async def debug_handler(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    await message.answer(f"debug:\nstate={await state.get_state()}\nauthed={await is_authed(state)}\norder_id={data.get('order_id')}\ncustomer_id={data.get('customer_id')}")
+
 @dp.message(StateFilter(AuthStates.waiting_for_code))
 async def process_auth(message: types.Message, state: FSMContext):
     code_or_phone = (message.text or "").strip()
     if not code_or_phone:
         await message.answer("Введите, пожалуйста, bot_code или номер телефона 🤍")
         return
+
+    await message.answer("Ищу ваш заказ… секунду, пожалуйста 🤍")
 
     try:
         order = pick_order_by_code_or_phone(code_or_phone)
@@ -91,8 +102,7 @@ async def process_auth(message: types.Message, state: FSMContext):
     await message.answer("✅ Авторизация успешна! Что хотите узнать?", reply_markup=get_main_keyboard())
 
 async def ensure_authorized(callback: types.CallbackQuery, state: FSMContext) -> bool:
-    data = await state.get_data()
-    if not data.get("order_id"):
+    if not await is_authed(state):
         await callback.message.answer(
             "Чтобы продолжить, пожалуйста, введите ваш bot_code или номер телефона 🤍"
         )
@@ -164,15 +174,13 @@ async def review_handler(message: types.Message, state: FSMContext):
     await message.answer("Спасибо за ваш отзыв! Нам важно ваше мнение 💬😊", reply_markup=get_main_keyboard())
     await state.set_state(None)
 
-# Fallback: если почему-то не сработал фильтр состояния, всё равно обрабатываем ввод bot_code
-@dp.message()
+# Fallback: если state не подтянулся по какой-то причине,
+# но пользователь не авторизован — пробуем интерпретировать текст как bot_code/телефон.
+@dp.message(F.text)
 async def any_text_fallback(message: types.Message, state: FSMContext):
-    curr = await state.get_state()
-    if curr == AuthStates.waiting_for_code.state:
+    if not await is_authed(state):
         await process_auth(message, state)
-    else:
-        # Ничего не делаем, чтобы не мешать другим сценариям
-        pass
+    # иначе молча игнорируем, чтобы не ломать другие сценарии
 
 async def on_startup(app):
     url = WEBHOOK_URL
