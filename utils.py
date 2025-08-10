@@ -17,17 +17,6 @@ def normalize_phone(phone: str) -> Optional[str]:
         return None
     return p
 
-def is_probably_phone(text: str) -> bool:
-    digits = re.sub(r"\D", "", text or "")
-    return len(digits) >= 10
-
-def extract_stars_from_callback(data: str) -> Optional[int]:
-    m = re.match(r"star:(\d)", data or "")
-    if not m:
-        return None
-    val = int(m.group(1))
-    return val if 1 <= val <= 5 else None
-
 def human_status(code: str) -> str:
     mapping = {
         "new": "принят",
