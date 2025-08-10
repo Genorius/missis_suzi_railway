@@ -1,258 +1,227 @@
+import os
 import logging
-from typing import List, Dict, Any
+from typing import Optional
 
-from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.executor import start_webhook
 
-from config import TELEGRAM_BOT_TOKEN, WEBHOOK_URL, PORT, USE_WEBHOOK, ADMIN_CHAT_ID
-from utils import normalize_phone, human_status
-from crm import fetch_orders_by_bot_code, fetch_orders_by_phone, get_order_by_id, patch_order_comment
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 
-# logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("missis_suzi_bot")
+from config import TELEGRAM_TOKEN, WEBHOOK_URL, PORT, ADMIN_TELEGRAM_ID
+from keyboards import get_main_keyboard, get_stars_keyboard
+from redis_client import is_authorized, authorize_user, get_order_id, get_user_field, clear_auth
+from utils import normalize_phone, is_probably_phone, extract_stars_from_callback
+from crm import pick_order_by_code_or_phone, get_order_by_id, get_order_status_text, get_tracking_number_text, save_review
 
-# In-memory auth (для простоты и стабильного старта)
-AUTH: Dict[int, Dict[str, str]] = {}
+# --- Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("missis-suzi-bot")
 
-# Safety check for token
-if not TELEGRAM_BOT_TOKEN or ":" not in TELEGRAM_BOT_TOKEN:
-    raise SystemExit("TELEGRAM_BOT_TOKEN пустой/неверный. Задайте корректный токен в переменных окружения.")
+# --- Bot / Dispatcher
+if not TELEGRAM_TOKEN:
+    raise RuntimeError("TELEGRAM_TOKEN is not set")
+if not WEBHOOK_URL:
+    raise RuntimeError("WEBHOOK_URL is not set")
 
-bot = Bot(token=TELEGRAM_BOT_TOKEN, parse_mode="HTML")
-dp = Dispatcher(bot, storage=MemoryStorage())
+bot = Bot(token=TELEGRAM_TOKEN, parse_mode="HTML")
+dp = Dispatcher(storage=MemoryStorage())
 
-class AuthStates(StatesGroup):
+# --- States
+class AuthState(StatesGroup):
     waiting_input = State()
 
-class SupportStates(StatesGroup):
-    waiting_message = State()
-
-class ReviewStates(StatesGroup):
-    waiting_stars = State()
+class ReviewState(StatesGroup):
     waiting_comment = State()
 
-WEBHOOK_PATH = "/telegram"  # фиксированный путь вебхука
+class SupportState(StatesGroup):
+    waiting_message = State()
 
-def kb_start() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="Авторизоваться", callback_data="auth_start")
-    ]])
-
-def kb_main() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Статус отправления", callback_data="status")],
-        [InlineKeyboardButton(text="Трек-номер", callback_data="track")],
-        [InlineKeyboardButton(text="Мои заказы", callback_data="orders")],
-        [InlineKeyboardButton(text="Поддержка", callback_data="support")],
-    ])
-
-def kb_stars() -> InlineKeyboardMarkup:
-    row = [
-        InlineKeyboardButton(text="★", callback_data="star:1"),
-        InlineKeyboardButton(text="★★", callback_data="star:2"),
-        InlineKeyboardButton(text="★★★", callback_data="star:3"),
-        InlineKeyboardButton(text="★★★★", callback_data="star:4"),
-        InlineKeyboardButton(text="★★★★★", callback_data="star:5"),
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=[row])
-
-@dp.message_handler(commands=["start", "help"])
-async def cmd_start(message: types.Message, state: FSMContext):
+# --- Helpers
+async def ensure_authorized(message: types.Message) -> bool:
+    if is_authorized(message.from_user.id):
+        return True
     await message.answer(
-        "👋 Привет! Это Missis S’Uzi — я помогу со статусом отправления, трек‑номером и заказами.\n"
-        "Для доступа к функциям — авторизуйтесь.",
-        reply_markup=kb_start()
+        "Чтобы продолжить, авторизуйтесь: введите <b>код заказа (bot_code)</b> или <b>номер телефона</b>."
     )
+    await dp.fsm.get_context(message.from_user.id, message.chat.id).set_state(AuthState.waiting_input)
+    return False
 
-@dp.callback_query_handler(lambda c: c.data == "auth_start")
-async def cb_auth_start(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("Введите ваш <b>bot_code</b> или номер телефона.")
-    await AuthStates.waiting_input.set()
-    await callback.answer()
-
-@dp.message_handler(state=AuthStates.waiting_input)
-async def cb_auth_input(message: types.Message, state: FSMContext):
-    text = (message.text or "").strip()
-    orders: List[Dict[str, Any]] = []
-
-    phone = normalize_phone(text)
-    if phone:
-        orders = await fetch_orders_by_phone(phone)
+# --- Handlers
+@dp.message(commands={"start"})
+async def cmd_start(message: types.Message, state: FSMContext):
+    await message.answer("👋 Привет! Missis S’Uzi подключена.", reply_markup=None)
+    if is_authorized(message.from_user.id):
+        await message.answer("Готова помочь по вашему заказу. Выберите действие:", reply_markup=get_main_keyboard())
     else:
-        orders = await fetch_orders_by_bot_code(text)
+        await message.answer(
 
-    if not orders:
-        await message.answer("Не нашла заказов по этим данным. Проверьте и отправьте ещё раз.")
+            "Для доступа к статусу, треку и заказам — авторизуйтесь.\n"
+
+            "Введите <b>bot_code</b> или <b>номер телефона</b> (в любом читаемом формате)."
+
+        )
+
+        await state.set_state(AuthState.waiting_input)
+
+@dp.message(AuthState.waiting_input)
+async def auth_input(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    code: Optional[str] = None
+    phone: Optional[str] = None
+
+    if is_probably_phone(text):
+        phone = normalize_phone(text)
+    else:
+        code = text
+
+    order = await pick_order_by_code_or_phone(code=code, phone=phone)
+    if not order:
+        await message.answer("Не нашла заказ по этим данным. Проверьте ввод или пришлите другой код/телефон.")
         return
 
-    order = orders[0]
-    order_id = str(order.get("id") or order.get("externalId") or order.get("number"))
+    order_id = order.get("id") or order.get("number") or order.get("externalId")
+    authorize_user(message.from_user.id, order_id=str(order_id), code=code, phone=phone)
 
-    AUTH[message.from_user.id] = {"order_id": order_id, "phone": phone or "", "code": "" if phone else text}
+    await message.answer("Готово! Доступ открыт 🤝", reply_markup=get_main_keyboard())
+    await state.clear()
 
-    await state.finish()
-    await message.answer("Готово! Доступ открыт ✅", reply_markup=kb_main())
-
-def _need_auth(user_id: int) -> bool:
-    return user_id not in AUTH
-
-@dp.callback_query_handler(lambda c: c.data == "status")
-async def cb_status(callback: types.CallbackQuery, state: FSMContext):
-    uid = callback.from_user.id
-    if _need_auth(uid):
-        await callback.message.answer("Пожалуйста, сначала авторизуйтесь.", reply_markup=kb_start())
-        return await callback.answer()
-
-    order_id = AUTH[uid]["order_id"]
+@dp.callback_query(F.data == "status")
+async def cb_status(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if not is_authorized(user_id):
+        await callback.message.answer("Пожалуйста, сначала авторизуйтесь.")
+        await callback.answer()
+        return
+    order_id = get_order_id(user_id)
     order = await get_order_by_id(order_id)
-    if not order:
-        await callback.message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍")
-        return await callback.answer()
-
-    status = human_status(order.get("status") or "unknown")
-    num = order.get("number") or order.get("externalId") or order.get("id")
-    await callback.message.answer(f"📦 Заказ #{num}\nСтатус: <b>{status}</b>")
-    await callback.answer()
-
-@dp.callback_query_handler(lambda c: c.data == "track")
-async def cb_track(callback: types.CallbackQuery, state: FSMContext):
-    uid = callback.from_user.id
-    if _need_auth(uid):
-        await callback.message.answer("Пожалуйста, сначала авторизуйтесь.", reply_markup=kb_start())
-        return await callback.answer()
-
-    order_id = AUTH[uid]["order_id"]
-    order = await get_order_by_id(order_id)
-    if not order:
-        await callback.message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍")
-        return await callback.answer()
-
-    delivery = order.get("delivery") or {}
-    track = (delivery.get("number") or "").strip()
-    if track:
-        await callback.message.answer(f"🔎 Трек‑номер: <code>{track}</code>")
-    else:
-        await callback.message.answer("Пока без трек‑номера — как только появится, я сразу подскажу. 🤍")
-    await callback.answer()
-
-@dp.callback_query_handler(lambda c: c.data == "orders")
-async def cb_orders(callback: types.CallbackQuery, state: FSMContext):
-    uid = callback.from_user.id
-    if _need_auth(uid):
-        await callback.message.answer("Пожалуйста, сначала авторизуйтесь.", reply_markup=kb_start())
-        return await callback.answer()
-
-    phone = AUTH[uid].get("phone") or ""
-    code = AUTH[uid].get("code") or ""
-    orders = []
-    if phone:
-        orders = await fetch_orders_by_phone(phone)
-    if not orders and code:
-        orders = await fetch_orders_by_bot_code(code)
-
-    if not orders:
-        await callback.message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍")
-        return await callback.answer()
-
-    text = "📋 Ваши заказы:\n\n"
-    for o in orders[:10]:
-        num = o.get("number") or o.get("externalId") or o.get("id")
-        status = o.get("status") or "unknown"
-        text += f"• #{num} — {status}\n"
+    text = await get_order_status_text(order)
     await callback.message.answer(text)
     await callback.answer()
 
-@dp.callback_query_handler(lambda c: c.data == "support")
-async def cb_support(callback: types.CallbackQuery, state: FSMContext):
-    if _need_auth(callback.from_user.id):
-        await callback.message.answer("Пожалуйста, сначала авторизуйтесь.", reply_markup=kb_start())
-        return await callback.answer()
-    await callback.message.answer("Опишите, пожалуйста, вопрос. Я передам сообщение в поддержку.")
-    await SupportStates.waiting_message.set()
+@dp.callback_query(F.data == "track")
+async def cb_track(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if not is_authorized(user_id):
+        await callback.message.answer("Пожалуйста, сначала авторизуйтесь.")
+        await callback.answer()
+        return
+    order_id = get_order_id(user_id)
+    order = await get_order_by_id(order_id)
+    text = await get_tracking_number_text(order)
+    await callback.message.answer(text)
     await callback.answer()
 
-@dp.message_handler(state=SupportStates.waiting_message, content_types=types.ContentTypes.ANY)
-async def support_relay(message: types.Message, state: FSMContext):
-    if ADMIN_CHAT_ID:
-        user = message.from_user
-        try:
-            header = f"Заявка в поддержку от @{user.username or 'без_username'} (id {user.id}):"
-            if message.content_type == types.ContentType.TEXT:
-                await bot.send_message(ADMIN_CHAT_ID, f"{header}\n\n{message.text}")
-            else:
-                await message.forward(ADMIN_CHAT_ID)
-        except Exception:
-            pass
-    await state.finish()
-    await message.answer("Ваше сообщение передала администратору. Он ответит вам в ближайшее время.")
+@dp.callback_query(F.data == "orders")
+async def cb_orders(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if not is_authorized(user_id):
+        await callback.message.answer("Пожалуйста, сначала авторизуйтесь.")
+        await callback.answer()
+        return
+    order_id = get_order_id(user_id)
+    order = await get_order_by_id(order_id)
+    if not order:
+        await callback.message.answer("Пока нет активных заказов. Я всё проверила 🤍")
+    else:
+        num = order.get("number") or order.get("externalId") or order.get("id")
+        status = order.get("status") or "unknown"
+        await callback.message.answer(f"📋 Текущий заказ: #{num}\nСтатус: {status}")
+    await callback.answer()
 
-# Отзыв
-@dp.message_handler(commands=["review"])
-async def cmd_review(message: types.Message, state: FSMContext):
-    if _need_auth(message.from_user.id):
-        return await message.reply("Пожалуйста, сначала авторизуйтесь.", reply_markup=kb_start())
-    await message.answer("Оцените, пожалуйста, заказ.", reply_markup=kb_stars())
-    await ReviewStates.waiting_stars.set()
+@dp.callback_query(F.data == "rate")
+async def cb_rate(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    if not is_authorized(user_id):
+        await callback.message.answer("Пожалуйста, сначала авторизуйтесь.")
+        await callback.answer()
+        return
+    await callback.message.answer("Оцените заказ:", reply_markup=get_stars_keyboard())
+    await callback.answer()
 
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith("star:"), state=ReviewStates.waiting_stars)
-async def cb_stars(callback: types.CallbackQuery, state: FSMContext):
-    stars = callback.data.split(":", 1)[1]
+@dp.callback_query(F.data.startswith("star:"))
+async def cb_star(callback: types.CallbackQuery, state: FSMContext):
+    stars = extract_stars_from_callback(callback.data)
+    if not stars:
+        await callback.answer()
+        return
     await state.update_data(stars=stars)
-    await callback.message.answer("Будем рады, если оставите отзыв — нам важно ваше мнение 💬😊\nНапишите пару слов ответным сообщением.")
-    await ReviewStates.waiting_comment.set()
+    await state.set_state(ReviewState.waiting_comment)
+    await callback.message.answer(
+        "Спасибо за оценку! 💫 Напишите, пожалуйста, пару слов — это поможет нам стать лучше."
+    )
     await callback.answer()
 
-@dp.message_handler(state=ReviewStates.waiting_comment)
+@dp.message(ReviewState.waiting_comment)
 async def review_comment(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    if not is_authorized(user_id):
+        await message.answer("Пожалуйста, сначала авторизуйтесь.")
+        return
+    order_id = get_order_id(user_id)
     data = await state.get_data()
-    stars = data.get("stars") or ""
-    uid = message.from_user.id
-    order_id = (AUTH.get(uid) or {}).get("order_id")
+    stars = int(data.get("stars", 0))
     comment = (message.text or "").strip()
-    full = f"Оценка: {stars}\nКомментарий: {comment}" if stars else comment
-    ok = await patch_order_comment(order_id, full)
-    await state.finish()
+
+    ok = await save_review(order_id, stars, comment)
     if ok:
-        await message.answer("Спасибо! Отзыв сохранён. 🤍")
+        await message.answer("Спасибо! Передала ваш отзыв в работу. Нам очень важно ваше мнение 🤍")
     else:
-        await message.answer("Не смогла сохранить отзыв из‑за технической ошибки, но уже передала сигнал. Попробуйте позже.")
+        await message.answer("Не удалось сохранить отзыв. Попробуйте чуть позже.")
+    await state.clear()
 
-# Startup / Shutdown
-async def on_startup(dp: Dispatcher):
-    if USE_WEBHOOK:
-        if not WEBHOOK_URL:
-            log.error("WEBHOOK_URL пустой. Укажите переменную окружения WEBHOOK_URL.")
-            raise SystemExit("WEBHOOK_URL пустой. Укажите переменную окружения WEBHOOK_URL.")
-        final_url = WEBHOOK_URL.rstrip('/') + WEBHOOK_PATH
-        log.info("Устанавливаю вебхук на: %s", final_url)
-        await bot.set_webhook(final_url)
+@dp.callback_query(F.data == "support")
+async def cb_support(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(SupportState.waiting_message)
+    await callback.message.answer("Опишите, пожалуйста, вопрос — я передам его напрямую в поддержку.")
+    await callback.answer()
 
-async def on_shutdown(dp: Dispatcher):
-    try:
-        await bot.delete_webhook()
-    except Exception:
-        pass
-    log.info("Бот остановлен.")
+@dp.message(SupportState.waiting_message)
+async def support_message(message: types.Message, state: FSMContext):
+    user = message.from_user
+    text = message.text or "(без текста)"
+    admin_id = ADMIN_TELEGRAM_ID
+    link = f"tg://user?id={user.id}"
+    forwarded = (
+        f"🆘 Запрос в поддержку\n"
+        f"От: {user.full_name} (@{user.username or '—'}, id={user.id})\n"
+        f"Профиль: {link}\n\n"
+        f"Сообщение:\n{text}"
+    )
+    if admin_id:
+        try:
+            await bot.send_message(chat_id=admin_id, text=forwarded)
+        except Exception as e:
+            logger.exception("Failed to forward support message: %s", e)
+    await message.answer("Отправила запрос. Мы свяжемся с вами в Telegram как можно скорее 🤍")
+    await state.clear()
 
-def main():
-    if USE_WEBHOOK:
-        start_webhook(
-            dispatcher=dp,
-            webhook_path=WEBHOOK_PATH,
-            on_startup=on_startup,
-            on_shutdown=on_shutdown,
-            skip_updates=True,
-            host="0.0.0.0",
-            port=PORT,
-        )
-    else:
-        from aiogram import executor
-        executor.start_polling(dp, skip_updates=True, on_startup=on_startup, on_shutdown=on_shutdown)
+# --- AIOHTTP App / Webhook
+async def on_startup(app: web.Application):
+    await bot.set_webhook(WEBHOOK_URL.rstrip('/') + '/webhook')
+    logger.info("Webhook установлен: %s", WEBHOOK_URL)
+
+async def on_shutdown(app: web.Application):
+    await bot.delete_webhook()
+
+def build_app() -> web.Application:
+    app = web.Application()
+    # Health check
+    async def ping(request):
+        return web.Response(text="ok")
+    app.router.add_get("/ping", ping)
+
+    # Aiogram webhook
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/webhook")
+    setup_application(app, dp, bot=bot)
+
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    return app
 
 if __name__ == "__main__":
-    main()
+    app = build_app()
+    web.run_app(app, host="0.0.0.0", port=PORT)

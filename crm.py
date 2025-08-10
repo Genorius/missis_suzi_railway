@@ -1,59 +1,112 @@
 import aiohttp
-from typing import Dict, Any, List, Optional
-from config import CRM_URL, CRM_API_KEY
+from typing import Optional, Dict, Any, List
+from config import CRM_API_KEY, CRM_URL
 
-class CRMError(Exception):
-    pass
+if not CRM_API_KEY or not CRM_URL:
+    raise RuntimeError("CRM_API_KEY/CRM_URL not configured")
+
+HEADERS = {
+    "Content-Type": "application/json",
+    "X-API-KEY": CRM_API_KEY,
+}
 
 async def _get(session: aiohttp.ClientSession, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    if not CRM_URL or not CRM_API_KEY:
-        raise CRMError("CRM not configured")
     url = f"{CRM_URL}{path}"
-    params = dict(params or {})
-    params.setdefault("apiKey", CRM_API_KEY)
-    async with session.get(url, params=params, timeout=20) as resp:
-        if resp.status >= 400:
-            txt = await resp.text()
-            raise CRMError(f"GET {path} -> {resp.status}: {txt[:200]}")
+    async with session.get(url, params=params, headers=HEADERS, timeout=20) as resp:
         return await resp.json()
 
-async def _post(session: aiohttp.ClientSession, path: str, json_body: Dict[str, Any]) -> Dict[str, Any]:
-    if not CRM_URL or not CRM_API_KEY:
-        raise CRMError("CRM not configured")
+async def _post(session: aiohttp.ClientSession, path: str, json_body: Dict[str, Any], params: Dict[str, Any] = None) -> Dict[str, Any]:
     url = f"{CRM_URL}{path}"
-    async with session.post(url, params={"apiKey": CRM_API_KEY}, json=json_body, timeout=20) as resp:
-        if resp.status >= 400:
-            txt = await resp.text()
-            raise CRMError(f"POST {path} -> {resp.status}: {txt[:200]}")
+    async with session.post(url, json=json_body, params=params or {}, headers=HEADERS, timeout=20) as resp:
         return await resp.json()
 
 async def fetch_orders_by_bot_code(code: str) -> List[Dict[str, Any]]:
-    if not code:
-        return []
+    params_try = [
+        {"filter[customFields][bot_code]": code},
+        {"customFields[bot_code]": code},
+    ]
     async with aiohttp.ClientSession() as s:
-        data = await _get(s, "/api/v5/orders", {"filter[customFields][bot_code]": code})
-        return data.get("orders") or []
+        for p in params_try:
+            data = await _get(s, "/api/v5/orders", p)
+            orders = data.get("orders") or data.get("items") or []
+            if orders:
+                return orders
+        return []
 
 async def fetch_orders_by_phone(phone: str) -> List[Dict[str, Any]]:
-    if not phone:
-        return []
+    params_try = [
+        {"filter[customer][phone]": phone},
+        {"customer[phone]": phone},
+    ]
     async with aiohttp.ClientSession() as s:
-        data = await _get(s, "/api/v5/orders", {"filter[customer][phones][]": phone})
-        return data.get("orders") or []
+        for p in params_try:
+            data = await _get(s, "/api/v5/orders", p)
+            orders = data.get("orders") or data.get("items") or []
+            if orders:
+                return orders
+        return []
+
+def _has_bot_code(order: Dict[str, Any]) -> bool:
+    cf = (order or {}).get("customFields") or {}
+    return bool(cf.get("bot_code"))
+
+def _get_delivery_number(order: Dict[str, Any]) -> Optional[str]:
+    return ((order or {}).get("delivery") or {}).get("number")
+
+async def pick_order_by_code_or_phone(code: Optional[str], phone: Optional[str]) -> Optional[Dict[str, Any]]:
+    # Priority 1: by bot_code exact match
+    if code:
+        orders = await fetch_orders_by_bot_code(code)
+        for o in orders:
+            cf = (o.get("customFields") or {})
+            if str(cf.get("bot_code")) == str(code):
+                return o
+        return None
+    # Priority 2: by phone but only orders that have bot_code
+    if phone:
+        orders = await fetch_orders_by_phone(phone)
+        orders_with_code = [o for o in orders if _has_bot_code(o)]
+        # choose the most recent by createdAt or id
+        def key_func(o):
+            return o.get("createdAt") or o.get("updatedAt") or o.get("id") or 0
+        orders_with_code.sort(key=key_func, reverse=True)
+        return orders_with_code[0] if orders_with_code else None
+    return None
 
 async def get_order_by_id(order_id: str) -> Optional[Dict[str, Any]]:
-    if not order_id:
-        return None
     async with aiohttp.ClientSession() as s:
         data = await _get(s, "/api/v5/orders", {"ids[]": order_id})
         orders = data.get("orders") or []
         return orders[0] if orders else None
 
-async def patch_order_comment(order_id: str, comment: str) -> bool:
+async def get_order_status_text(order: Dict[str, Any]) -> str:
+    if not order:
+        return "Не удалось получить статус заказа."
+    status = order.get("status") or "unknown"
+    num = order.get("number") or order.get("externalId") or order.get("id")
+    return f"📦 Заказ #{num}
+Статус: {status}"
+
+async def get_tracking_number_text(order: Dict[str, Any]) -> str:
+    if not order:
+        return "Не удалось получить информацию о доставке."
+    track = _get_delivery_number(order)
+    if track:
+        return f"🚚 Трек-номер: {track}
+
+Отслеживание доступно на сайте СДЭК."
+    return "Пока нет трек-номера — как только появится, я сразу подскажу. Всё под контролем 🤍"
+
+async def save_review(order_id: str, stars: int, comment: str = "") -> bool:
+    payload = {
+        "order": {
+            "id": order_id,
+            "customFields": {
+                "rating": stars,
+                "comments": comment or ""
+            }
+        }
+    }
     async with aiohttp.ClientSession() as s:
-        payload = {"order": {"customFields": {"comments": comment}}, "by": "externalId"}
-        try:
-            await _post(s, f"/api/v5/orders/{order_id}/edit", payload)
-            return True
-        except CRMError:
-            return False
+        data = await _post(s, f"/api/v5/orders/{order_id}/edit", payload, params={"by": "id"})
+        return bool(data)
