@@ -45,7 +45,7 @@ async def ensure_authorized(message: types.Message) -> bool:
     if is_authorized(message.from_user.id):
         return True
     await message.answer(
-        "Чтобы продолжить, авторизуйтесь: введите <b>код заказа (bot_code)</b> или <b>номер телефона</b>.",
+        "Чтобы продолжить, авторизуйтесь: введите <b>код заказа (bot_code)</b> или <b>номер телефона</b>."
     )
     await dp.fsm.get_context(message.from_user.id, message.chat.id).set_state(AuthState.waiting_input)
     return False
@@ -58,10 +58,13 @@ async def cmd_start(message: types.Message, state: FSMContext):
         await message.answer("Готова помочь по вашему заказу. Выберите действие:", reply_markup=get_main_keyboard())
     else:
         await message.answer(
-            "Для доступа к статусу, треку и заказам — авторизуйтесь.
-"
-            "Введите <b>bot_code</b> или <b>номер телефона</b> (в любом читаемом формате).",
+
+            "Для доступа к статусу, треку и заказам — авторизуйтесь.\n"
+
+            "Введите <b>bot_code</b> или <b>номер телефона</b> (в любом читаемом формате)."
+
         )
+
         await state.set_state(AuthState.waiting_input)
 
 @dp.message(AuthState.waiting_input)
@@ -126,8 +129,7 @@ async def cb_orders(callback: types.CallbackQuery):
     else:
         num = order.get("number") or order.get("externalId") or order.get("id")
         status = order.get("status") or "unknown"
-        await callback.message.answer(f"📋 Текущий заказ: #{num}
-Статус: {status}")
+        await callback.message.answer(f"📋 Текущий заказ: #{num}\nСтатус: {status}")
     await callback.answer()
 
 @dp.callback_query(F.data == "rate")
