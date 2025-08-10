@@ -108,10 +108,11 @@ def get_order_by_id(order_id: int):
     return data.get("order") or {}
 
 def save_telegram_id_for_order(order_id: int, telegram_id: int, site: str | None = None):
-    payload = {"by": "id", "order": {"customFields": {"telegram_id": str(telegram_id)}}}
+    payload = {"order": {"customFields": {"telegram_id": str(telegram_id)}}}
+    params = {"apiKey": API_KEY, "by": "id"}
     if site:
-        payload["site"] = site
-    crm_post(f"orders/{order_id}/edit", payload)
+        params["site"] = site
+    crm_post(f"orders/{order_id}/edit", payload, params=params)
 
 def get_order_status_text_by_id(order_id: int):
     o = get_order_by_id(order_id)
@@ -145,7 +146,8 @@ def get_orders_list_text_by_customer_id(customer_id: int):
 def save_review_by_order_id(order_id: int, review_text: str):
     o = get_order_by_id(order_id)
     site = o.get("site")
-    payload = {"by": "id", "order": {"customFields": {"comments": review_text}}}
+    payload = {"order": {"customFields": {"comments": review_text}}}
+    params = {"apiKey": API_KEY, "by": "id"}
     if site:
-        payload["site"] = site
-    crm_post(f"orders/{order_id}/edit", payload)
+        params["site"] = site
+    crm_post(f"orders/{order_id}/edit", payload, params=params)
