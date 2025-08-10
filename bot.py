@@ -1,227 +1,313 @@
-import os
-import logging
-from typing import Optional
+    import os
+    import asyncio
+    from typing import List, Dict, Any, Optional
 
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.fsm.state import StatesGroup, State
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from aiogram import Bot, Dispatcher, types
+    from aiogram.contrib.fsm_storage.memory import MemoryStorage
+    from aiogram.dispatcher import FSMContext
+    from aiogram.dispatcher.filters.state import State, StatesGroup
+    from aiogram.utils.executor import start_webhook
+    from aiogram import F
 
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
+    from config import TELEGRAM_BOT_TOKEN, WEBHOOK_URL, PORT, ADMIN_CHAT_ID, USE_WEBHOOK
+    from keyboards import start_keyboard, main_keyboard, orders_nav, stars_keyboard
+    from redis_client import is_authorized, authorize_user, get_order_id, get_user_field, clear_auth, allow_request, cache_orders, get_cached_orders
+    from utils import normalize_phone, is_probably_phone, extract_stars_from_callback, human_status
+    from crm import fetch_orders_by_bot_code, fetch_orders_by_phone, get_order_by_id, patch_order_comment
 
-from config import TELEGRAM_TOKEN, WEBHOOK_URL, PORT, ADMIN_TELEGRAM_ID
-from keyboards import get_main_keyboard, get_stars_keyboard
-from redis_client import is_authorized, authorize_user, get_order_id, get_user_field, clear_auth
-from utils import normalize_phone, is_probably_phone, extract_stars_from_callback
-from crm import pick_order_by_code_or_phone, get_order_by_id, get_order_status_text, get_tracking_number_text, save_review
+    # States
+    class AuthStates(StatesGroup):
+        waiting_input = State()
 
-# --- Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("missis-suzi-bot")
+    class SupportStates(StatesGroup):
+        waiting_message = State()
 
-# --- Bot / Dispatcher
-if not TELEGRAM_TOKEN:
-    raise RuntimeError("TELEGRAM_TOKEN is not set")
-if not WEBHOOK_URL:
-    raise RuntimeError("WEBHOOK_URL is not set")
+    bot = Bot(token=TELEGRAM_BOT_TOKEN, parse_mode="HTML")
+    dp = Dispatcher(bot, storage=MemoryStorage())
 
-bot = Bot(token=TELEGRAM_TOKEN, parse_mode="HTML")
-dp = Dispatcher(storage=MemoryStorage())
+    async def guard_rate_limit(event) -> bool:
+        user_id = getattr(event.from_user, "id", None)
+        return allow_request(user_id) if user_id else True
 
-# --- States
-class AuthState(StatesGroup):
-    waiting_input = State()
-
-class ReviewState(StatesGroup):
-    waiting_comment = State()
-
-class SupportState(StatesGroup):
-    waiting_message = State()
-
-# --- Helpers
-async def ensure_authorized(message: types.Message) -> bool:
-    if is_authorized(message.from_user.id):
-        return True
-    await message.answer(
-        "Чтобы продолжить, авторизуйтесь: введите <b>код заказа (bot_code)</b> или <b>номер телефона</b>."
-    )
-    await dp.fsm.get_context(message.from_user.id, message.chat.id).set_state(AuthState.waiting_input)
-    return False
-
-# --- Handlers
-@dp.message(commands={"start"})
-async def cmd_start(message: types.Message, state: FSMContext):
-    await message.answer("👋 Привет! Missis S’Uzi подключена.", reply_markup=None)
-    if is_authorized(message.from_user.id):
-        await message.answer("Готова помочь по вашему заказу. Выберите действие:", reply_markup=get_main_keyboard())
-    else:
+    @dp.message_handler(commands=["start", "help"])
+    async def cmd_start(message: types.Message, state: FSMContext):
         await message.answer(
-
-            "Для доступа к статусу, треку и заказам — авторизуйтесь.\n"
-
-            "Введите <b>bot_code</b> или <b>номер телефона</b> (в любом читаемом формате)."
-
+            "👋 Привет! Это Missis S’Uzi — я помогу со статусом отправления, трек‑номером и заказами.
+"
+            "Для доступа к функциям — авторизуйтесь.",
+            reply_markup=start_keyboard()
         )
 
-        await state.set_state(AuthState.waiting_input)
-
-@dp.message(AuthState.waiting_input)
-async def auth_input(message: types.Message, state: FSMContext):
-    text = (message.text or "").strip()
-    code: Optional[str] = None
-    phone: Optional[str] = None
-
-    if is_probably_phone(text):
-        phone = normalize_phone(text)
-    else:
-        code = text
-
-    order = await pick_order_by_code_or_phone(code=code, phone=phone)
-    if not order:
-        await message.answer("Не нашла заказ по этим данным. Проверьте ввод или пришлите другой код/телефон.")
-        return
-
-    order_id = order.get("id") or order.get("number") or order.get("externalId")
-    authorize_user(message.from_user.id, order_id=str(order_id), code=code, phone=phone)
-
-    await message.answer("Готово! Доступ открыт 🤝", reply_markup=get_main_keyboard())
-    await state.clear()
-
-@dp.callback_query(F.data == "status")
-async def cb_status(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    if not is_authorized(user_id):
-        await callback.message.answer("Пожалуйста, сначала авторизуйтесь.")
+    @dp.callback_query_handler(lambda c: c.data == "auth_start")
+    async def cb_auth_start(callback: types.CallbackQuery, state: FSMContext):
+        if not await guard_rate_limit(callback):
+            await callback.answer("Слишком часто. Попробуйте чуть позже.", show_alert=False)
+            return
+        await callback.message.answer("Введите ваш <b>bot_code</b> или номер телефона (в любом формате).")
+        await AuthStates.waiting_input.set()
         await callback.answer()
-        return
-    order_id = get_order_id(user_id)
-    order = await get_order_by_id(order_id)
-    text = await get_order_status_text(order)
-    await callback.message.answer(text)
-    await callback.answer()
 
-@dp.callback_query(F.data == "track")
-async def cb_track(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    if not is_authorized(user_id):
-        await callback.message.answer("Пожалуйста, сначала авторизуйтесь.")
-        await callback.answer()
-        return
-    order_id = get_order_id(user_id)
-    order = await get_order_by_id(order_id)
-    text = await get_tracking_number_text(order)
-    await callback.message.answer(text)
-    await callback.answer()
+    @dp.message_handler(state=AuthStates.waiting_input)
+    async def auth_process(message: types.Message, state: FSMContext):
+        text = (message.text or "").strip()
+        user_id = message.from_user.id
 
-@dp.callback_query(F.data == "orders")
-async def cb_orders(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    if not is_authorized(user_id):
-        await callback.message.answer("Пожалуйста, сначала авторизуйтесь.")
-        await callback.answer()
-        return
-    order_id = get_order_id(user_id)
-    order = await get_order_by_id(order_id)
-    if not order:
-        await callback.message.answer("Пока нет активных заказов. Я всё проверила 🤍")
-    else:
+        # phone?
+        orders: List[Dict[str, Any]] = []
+        phone_norm = None
+        if is_probably_phone(text):
+            phone_norm = normalize_phone(text)
+            if not phone_norm:
+                await message.answer("Не смог распознать номер. Введите, пожалуйста, корректный номер.")
+                return
+            orders = await fetch_orders_by_phone(phone_norm)
+        else:
+            # treat as bot_code
+            code = text
+            orders = await fetch_orders_by_bot_code(code)
+
+        if not orders:
+            await message.answer("Не нашла заказов по этим данным. Проверьте и отправьте ещё раз.")
+            return
+
+        # Выбираем последний «активный» или просто последний по списку
+        # (упрощённо — RetailCRM обычно сортирует по дате)
+        order = orders[0]
+        order_id = str(order.get("id") or order.get("externalId") or order.get("number"))
+
+        authorize_user(user_id, order_id, code=text if not phone_norm else None, phone=phone_norm)
+        await state.finish()
+        await message.answer("Готово! Доступ открыт ✅", reply_markup=main_keyboard())
+
+    @dp.callback_query_handler(lambda c: c.data == "status")
+    async def cb_status(callback: types.CallbackQuery, state: FSMContext):
+        if not await guard_rate_limit(callback):
+            await callback.answer()
+            return
+        user_id = callback.from_user.id
+        if not is_authorized(user_id):
+            await callback.message.answer("Пожалуйста, сначала авторизуйтесь.", reply_markup=start_keyboard())
+            await callback.answer()
+            return
+        order_id = get_order_id(user_id)
+        order = await get_order_by_id(order_id)
+        if not order:
+            await callback.message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍")
+            await callback.answer()
+            return
+        status = human_status(order.get("status") or "unknown")
         num = order.get("number") or order.get("externalId") or order.get("id")
-        status = order.get("status") or "unknown"
-        await callback.message.answer(f"📋 Текущий заказ: #{num}\nСтатус: {status}")
-    await callback.answer()
-
-@dp.callback_query(F.data == "rate")
-async def cb_rate(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    if not is_authorized(user_id):
-        await callback.message.answer("Пожалуйста, сначала авторизуйтесь.")
+        await callback.message.answer(f"📦 Заказ #{num}
+Статус: <b>{status}</b>")
         await callback.answer()
-        return
-    await callback.message.answer("Оцените заказ:", reply_markup=get_stars_keyboard())
-    await callback.answer()
 
-@dp.callback_query(F.data.startswith("star:"))
-async def cb_star(callback: types.CallbackQuery, state: FSMContext):
-    stars = extract_stars_from_callback(callback.data)
-    if not stars:
+    @dp.callback_query_handler(lambda c: c.data == "track")
+    async def cb_track(callback: types.CallbackQuery, state: FSMContext):
+        if not await guard_rate_limit(callback):
+            await callback.answer()
+            return
+        user_id = callback.from_user.id
+        if not is_authorized(user_id):
+            await callback.message.answer("Пожалуйста, сначала авторизуйтесь.", reply_markup=start_keyboard())
+            await callback.answer()
+            return
+        order_id = get_order_id(user_id)
+        order = await get_order_by_id(order_id)
+        if not order:
+            await callback.message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍")
+            await callback.answer()
+            return
+        delivery = order.get("delivery") or {}
+        track = (delivery.get("number") or "").strip()
+        if track:
+            await callback.message.answer(f"🔎 Трек‑номер: <code>{track}</code>")
+        else:
+            await callback.message.answer("Пока без трек‑номера — как только появится, я сразу подскажу. 🤍")
         await callback.answer()
-        return
-    await state.update_data(stars=stars)
-    await state.set_state(ReviewState.waiting_comment)
-    await callback.message.answer(
-        "Спасибо за оценку! 💫 Напишите, пожалуйста, пару слов — это поможет нам стать лучше."
-    )
-    await callback.answer()
 
-@dp.message(ReviewState.waiting_comment)
-async def review_comment(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    if not is_authorized(user_id):
-        await message.answer("Пожалуйста, сначала авторизуйтесь.")
-        return
-    order_id = get_order_id(user_id)
-    data = await state.get_data()
-    stars = int(data.get("stars", 0))
-    comment = (message.text or "").strip()
+    async def list_user_orders(user_id: int) -> List[Dict[str, Any]]:
+        # кэш из Redis
+        cached = get_cached_orders(user_id)
+        if cached:
+            return cached
+        # иначе ищем по телефону из профиля, потом по коду
+        phone = get_user_field(user_id, "phone")
+        code = get_user_field(user_id, "code")
+        orders: List[Dict[str, Any]] = []
+        if phone:
+            orders = await fetch_orders_by_phone(phone)
+        if not orders and code:
+            orders = await fetch_orders_by_bot_code(code)
+        if orders:
+            # лёгкий кэш
+            try:
+                cache_orders(user_id, orders, ttl=60)
+            except Exception:
+                pass
+        return orders
 
-    ok = await save_review(order_id, stars, comment)
-    if ok:
-        await message.answer("Спасибо! Передала ваш отзыв в работу. Нам очень важно ваше мнение 🤍")
-    else:
-        await message.answer("Не удалось сохранить отзыв. Попробуйте чуть позже.")
-    await state.clear()
+    @dp.callback_query_handler(lambda c: c.data == "orders")
+    async def cb_orders(callback: types.CallbackQuery, state: FSMContext):
+        if not await guard_rate_limit(callback):
+            await callback.answer("Слишком часто. Попробуйте чуть позже.", show_alert=False)
+            return
 
-@dp.callback_query(F.data == "support")
-async def cb_support(callback: types.CallbackQuery, state: FSMContext):
-    await state.set_state(SupportState.waiting_message)
-    await callback.message.answer("Опишите, пожалуйста, вопрос — я передам его напрямую в поддержку.")
-    await callback.answer()
+        user_id = callback.from_user.id
+        if not is_authorized(user_id):
+            await callback.message.answer("Пожалуйста, сначала авторизуйтесь.", reply_markup=start_keyboard())
+            await callback.answer()
+            return
 
-@dp.message(SupportState.waiting_message)
-async def support_message(message: types.Message, state: FSMContext):
-    user = message.from_user
-    text = message.text or "(без текста)"
-    admin_id = ADMIN_TELEGRAM_ID
-    link = f"tg://user?id={user.id}"
-    forwarded = (
-        f"🆘 Запрос в поддержку\n"
-        f"От: {user.full_name} (@{user.username or '—'}, id={user.id})\n"
-        f"Профиль: {link}\n\n"
-        f"Сообщение:\n{text}"
-    )
-    if admin_id:
+        orders = await list_user_orders(user_id)
+        if not orders:
+            await callback.message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍")
+            await callback.answer()
+            return
+
+        if len(orders) <= 5:
+            text = "📋 Ваши заказы:\n\n"
+            for o in orders:
+                num = o.get("number") or o.get("externalId") or o.get("id")
+                status = o.get("status") or "unknown"
+                text += f"• #{num} — {status}\n"
+            await callback.message.answer(text)
+            await callback.answer()
+            return
+
+        await show_orders_pagination(callback.message, orders, page=0)
+        await callback.answer()
+
+    async def show_orders_pagination(message: types.Message, orders: List[Dict[str, Any]], page: int = 0):
+        per_page = 5
+        total_pages = (len(orders) + per_page - 1) // per_page
+        page_orders = orders[page*per_page:(page+1)*per_page]
+        text = "📋 Ваши заказы:\n\n"
+        for i, order in enumerate(page_orders, 1):
+            num = order.get("number") or order.get("externalId") or order.get("id")
+            status = order.get("status") or "unknown"
+            text += f"{i}. #{num} - {status}\n"
+        text += f"\nСтраница {page+1} из {total_pages}"
+        await message.answer(text, reply_markup=orders_nav(page, total_pages))
+
+    @dp.callback_query_handler(lambda c: c.data and c.data.startswith("orders_page:"))
+    async def cb_orders_page(callback: types.CallbackQuery):
+        if not await guard_rate_limit(callback):
+            await callback.answer()
+            return
+        user_id = callback.from_user.id
+        orders = await list_user_orders(user_id)
+        if not orders:
+            await callback.answer()
+            return
         try:
-            await bot.send_message(chat_id=admin_id, text=forwarded)
-        except Exception as e:
-            logger.exception("Failed to forward support message: %s", e)
-    await message.answer("Отправила запрос. Мы свяжемся с вами в Telegram как можно скорее 🤍")
-    await state.clear()
+            page = int(callback.data.split(":", 1)[1])
+        except Exception:
+            page = 0
+        await show_orders_pagination(callback.message, orders, page=page)
+        await callback.answer()
 
-# --- AIOHTTP App / Webhook
-async def on_startup(app: web.Application):
-    await bot.set_webhook(WEBHOOK_URL.rstrip('/') + '/webhook')
-    logger.info("Webhook установлен: %s", WEBHOOK_URL)
+    @dp.callback_query_handler(lambda c: c.data == "support")
+    async def cb_support(callback: types.CallbackQuery, state: FSMContext):
+        if not await guard_rate_limit(callback):
+            await callback.answer()
+            return
+        if not is_authorized(callback.from_user.id):
+            await callback.message.answer("Пожалуйста, сначала авторизуйтесь.", reply_markup=start_keyboard())
+            await callback.answer()
+            return
+        await callback.message.answer("Опишите, пожалуйста, вопрос. Я передам сообщение в поддержку.")
+        await SupportStates.waiting_message.set()
+        await callback.answer()
 
-async def on_shutdown(app: web.Application):
-    await bot.delete_webhook()
+    @dp.message_handler(state=SupportStates.waiting_message, content_types=types.ContentTypes.ANY)
+    async def support_collect(message: types.Message, state: FSMContext):
+        if ADMIN_CHAT_ID:
+            user = message.from_user
+            header = f"Заявка в поддержку от @{user.username or 'без_username'} (id {user.id}):"
+            try:
+                if message.content_type == types.ContentType.TEXT:
+                    await bot.send_message(ADMIN_CHAT_ID, f"{header}\n\n{message.text}")
+                else:
+                    # форвард для нетекста
+                    await message.forward(ADMIN_CHAT_ID)
+            except Exception:
+                pass
+        await state.finish()
+        await message.answer("Ваше сообщение передала администратору. Он ответит вам в ближайшее время.")
 
-def build_app() -> web.Application:
-    app = web.Application()
-    # Health check
-    async def ping(request):
-        return web.Response(text="ok")
-    app.router.add_get("/ping", ping)
+    # Отзыв (звёзды + опциональный комментарий)
+    class ReviewStates(StatesGroup):
+        waiting_comment = State()
+        last_order_id = State()
 
-    # Aiogram webhook
-    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/webhook")
-    setup_application(app, dp, bot=bot)
+    @dp.message_handler(commands=["review"])
+    async def cmd_review(message: types.Message, state: FSMContext):
+        user_id = message.from_user.id
+        if not is_authorized(user_id):
+            await message.answer("Пожалуйста, сначала авторизуйтесь.", reply_markup=start_keyboard())
+            return
+        order_id = get_order_id(user_id)
+        if not order_id:
+            await message.answer("📦 Пока нет активных заказов. Я всё проверила 🤍")
+            return
+        await state.update_data(order_id=order_id)
+        await message.answer("Оцените, пожалуйста, заказ.", reply_markup=stars_keyboard())
 
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    return app
+    @dp.callback_query_handler(lambda c: c.data and c.data.startswith("star:"))
+    async def cb_stars(callback: types.CallbackQuery, state: FSMContext):
+        user_id = callback.from_user.id
+        if not is_authorized(user_id):
+            await callback.answer()
+            return
+        val = extract_stars_from_callback(callback.data)
+        data = await state.get_data()
+        order_id = data.get("order_id") or get_order_id(user_id)
+        await callback.message.answer("Будем рады, если оставите отзыв — нам важно ваше мнение 💬😊\nНапишите пару слов ответным сообщением.")
+        await ReviewStates.waiting_comment.set()
+        await state.update_data(order_id=order_id, stars=val)
+        await callback.answer()
 
-if __name__ == "__main__":
-    app = build_app()
-    web.run_app(app, host="0.0.0.0", port=PORT)
+    @dp.message_handler(state=ReviewStates.waiting_comment)
+    async def review_comment(message: types.Message, state: FSMContext):
+        data = await state.get_data()
+        order_id = data.get("order_id")
+        stars = data.get("stars")
+        comment = (message.text or "").strip()
+        full_comment = f"Оценка: {stars}\nКомментарий: {comment}" if stars else comment
+        ok = await patch_order_comment(order_id, full_comment)
+        await state.finish()
+        if ok:
+            await message.answer("Спасибо! Отзыв сохранён. 🤍")
+        else:
+            await message.answer("Не смогла сохранить отзыв из‑за технической ошибки, но уже передала сигнал. Попробуйте позже.")
+
+    # ====== RUNNER ======
+    WEBHOOK_PATH = "/telegram"
+
+    async def on_startup(dp: Dispatcher):
+        if USE_WEBHOOK and WEBHOOK_URL:
+            await bot.set_webhook(WEBHOOK_URL.rstrip('/') + WEBHOOK_PATH)
+
+    async def on_shutdown(dp: Dispatcher):
+        try:
+            await bot.delete_webhook()
+        except Exception:
+            pass
+
+    def main():
+        if USE_WEBHOOK and WEBHOOK_URL:
+            start_webhook(
+                dispatcher=dp,
+                webhook_path=WEBHOOK_PATH,
+                on_startup=on_startup,
+                on_shutdown=on_shutdown,
+                skip_updates=True,
+                host="0.0.0.0",
+                port=int(os.getenv("PORT", 8080)),
+            )
+        else:
+            from aiogram import executor
+            executor.start_polling(dp, skip_updates=True, on_startup=on_startup, on_shutdown=on_shutdown)
+
+    if __name__ == "__main__":
+        main()
