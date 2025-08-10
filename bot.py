@@ -48,8 +48,7 @@ def get_main_keyboard():
 @dp.message(Command("start"))
 async def start_handler(message: types.Message, state: FSMContext):
     await message.answer(
-        "👋 Привет! Я Missis S’Uzi — помогу узнать статус вашего заказа.
-"
+        "👋 Привет! Я Missis S'Uzi — помогу узнать статус вашего заказа.\n"
         "Введите, пожалуйста, ваш bot_code или номер телефона 🤍"
     )
     await state.set_state(AuthStates.waiting_for_code)
@@ -71,24 +70,28 @@ async def process_auth(message: types.Message, state: FSMContext):
 async def order_status_handler(callback: types.CallbackQuery):
     status_text = get_order_status_text(callback.from_user.id)
     await callback.message.answer(status_text)
+    await callback.answer()
 
 # Трек
 @dp.callback_query(F.data == "track")
 async def tracking_handler(callback: types.CallbackQuery):
     track_text = get_tracking_number_text(callback.from_user.id)
     await callback.message.answer(track_text)
+    await callback.answer()
 
 # Заказы
 @dp.callback_query(F.data == "orders")
 async def orders_handler(callback: types.CallbackQuery):
     orders_text = get_orders_list_text(callback.from_user.id)
     await callback.message.answer(orders_text)
+    await callback.answer()
 
 # Поддержка
 @dp.callback_query(F.data == "support")
 async def support_handler(callback: types.CallbackQuery):
     await callback.message.answer("💬 Пожалуйста, напишите свой вопрос, и мы ответим как можно скорее 🤍")
     await bot.send_message(ADMIN_ID, f"Запрос поддержки от @{callback.from_user.username} (ID {callback.from_user.id})")
+    await callback.answer()
 
 # Отзыв
 @dp.message(AuthStates.waiting_for_review)
