@@ -20,32 +20,6 @@ def crm_post(endpoint, payload=None, params=None):
     r.raise_for_status()
     return r.json()
 
-def _extract_track(o: dict) -> str | None:
-    d = (o or {}).get("delivery") or {}
-    cf = (o or {}).get("customFields") or {}
-    candidates = []
-    # direct fields
-    for key in ("number", "trackNumber", "trackingNumber", "track_number", "tracking_number"):
-        candidates.append(d.get(key))
-    # nested delivery.data
-    data = d.get("data") or {}
-    for key in ("number", "trackNumber", "trackingNumber", "track_number", "tracking_number", "barcode"):
-        candidates.append(data.get(key))
-    # delivery.tracks list
-    tracks = d.get("tracks") or []
-    if isinstance(tracks, list):
-        for t in tracks:
-            for key in ("number", "trackNumber", "trackingNumber", "code"):
-                candidates.append((t or {}).get(key))
-    # custom fields fallbacks
-    for key in ("track", "track_number", "tracking_number", "ttn", "awb", "awb_number"):
-        candidates.append(cf.get(key))
-
-    for c in candidates:
-        if isinstance(c, str) and c.strip():
-            return c.strip()
-    return None
-
 def _normalize_phone(s: str) -> str:
     s = (s or "").strip()
     if not s:
@@ -61,10 +35,7 @@ def _normalize_phone(s: str) -> str:
     return digits
 
 def _orders_by_bot_code(code: str) -> list:
-    data = crm_get("orders", {
-        "filter[customFields][bot_code]": code,
-        "limit": 20
-    })
+    data = crm_get("orders", {"filter[customFields][bot_code]": code, "limit": 20})
     orders = data.get("orders", []) or []
     return [o for o in orders if ((o.get("customFields") or {}).get("bot_code") == code)]
 
@@ -86,7 +57,6 @@ def pick_order_by_code_or_phone(code_or_phone: str):
         if by_code:
             by_code.sort(key=lambda o: o.get("createdAt") or "", reverse=True)
             return by_code[0]
-
     phone = _normalize_phone(code_or_phone)
     if phone:
         customers = _customers_by_phone(phone)
@@ -112,7 +82,9 @@ def save_telegram_id_for_order(order_id: int, telegram_id: int, site: str | None
     params = {"apiKey": API_KEY, "by": "id"}
     if site:
         params["site"] = site
-    crm_post(f"orders/{order_id}/edit", payload, params=params)
+    r = requests.post(f"{CRM_URL}/api/v5/orders/{order_id}/edit", params=params, json=payload, timeout=20)
+    r.raise_for_status()
+    return r.json()
 
 def get_order_status_text_by_id(order_id: int):
     o = get_order_by_id(order_id)
@@ -121,6 +93,27 @@ def get_order_status_text_by_id(order_id: int):
     status = o.get("statusComment") or o.get("status") or "Статус не указан"
     num = o.get("number", "—")
     return f"📦 Заказ #{num}\nСтатус: {status}"
+
+def _extract_track(o: dict) -> str | None:
+    d = (o or {}).get("delivery") or {}
+    cf = (o or {}).get("customFields") or {}
+    candidates = []
+    for key in ("number", "trackNumber", "trackingNumber", "track_number", "tracking_number"):
+        candidates.append(d.get(key))
+    data = d.get("data") or {}
+    for key in ("number", "trackNumber", "trackingNumber", "track_number", "tracking_number", "barcode"):
+        candidates.append(data.get(key))
+    tracks = d.get("tracks") or []
+    if isinstance(tracks, list):
+        for t in tracks:
+            for key in ("number", "trackNumber", "trackingNumber", "code"):
+                candidates.append((t or {}).get(key))
+    for key in ("track", "track_number", "tracking_number", "ttn", "awb", "awb_number"):
+        candidates.append(cf.get(key))
+    for c in candidates:
+        if isinstance(c, str) and c.strip():
+            return c.strip()
+    return None
 
 def get_tracking_number_text_by_id(order_id: int):
     o = get_order_by_id(order_id)
@@ -150,4 +143,6 @@ def save_review_by_order_id(order_id: int, review_text: str):
     params = {"apiKey": API_KEY, "by": "id"}
     if site:
         params["site"] = site
-    crm_post(f"orders/{order_id}/edit", payload, params=params)
+    r = requests.post(f"{CRM_URL}/api/v5/orders/{order_id}/edit", params=params, json=payload, timeout=20)
+    r.raise_for_status()
+    return r.json()

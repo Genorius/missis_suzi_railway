@@ -20,6 +20,7 @@ from crm import (
     save_telegram_id_for_order
 )
 
+# Verbose logs while stabilizing
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("aiogram").setLevel(logging.DEBUG)
 
@@ -58,6 +59,10 @@ async def start_handler(message: types.Message, state: FSMContext):
         "Введите, пожалуйста, ваш bot_code или номер телефона 🤍"
     )
     await state.set_state(AuthStates.waiting_for_code)
+
+@dp.message(Command("ping"))
+async def ping_handler(message: types.Message):
+    await message.answer("pong ✅")
 
 @dp.message(Command("logout"))
 async def logout_handler(message: types.Message, state: FSMContext):
@@ -173,13 +178,11 @@ async def support_handler(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(StateFilter(AuthStates.waiting_support_message), F.text)
 async def support_message_receiver(message: types.Message, state: FSMContext):
     uname = f"@{message.from_user.username}" if message.from_user.username else f"id {message.from_user.id}"
-    # Пытаемся отправить админу, но даже при ошибке отвечаем пользователю
     try:
         await bot.send_message(ADMIN_ID, f"🆘 Запрос поддержки от {uname}:\n{message.text}")
     except Exception as e:
         logging.warning("Failed to deliver support message to ADMIN_ID=%s: %s", ADMIN_ID, e)
-    await message.answer("Спасибо! Передала сообщение. Мы ответим как можно скорее 🤍",
-                         reply_markup=get_main_keyboard())
+    await message.answer("Спасибо! Передала сообщение. Мы ответим как можно скорее 🤍", reply_markup=get_main_keyboard())
     await state.set_state(None)
 
 @dp.message(StateFilter(AuthStates.waiting_for_review), F.text)
@@ -191,6 +194,7 @@ async def review_handler(message: types.Message, state: FSMContext):
     await message.answer("Спасибо за ваш отзыв! Нам важно ваше мнение 💬😊", reply_markup=get_main_keyboard())
     await state.set_state(None)
 
+# Safety net: try auth on any text if not authorized
 @dp.message(F.text)
 async def any_text_fallback(message: types.Message, state: FSMContext):
     current = await state.get_state()
