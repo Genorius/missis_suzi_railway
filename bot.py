@@ -249,6 +249,11 @@ async def on_startup(app):
 
 async def on_shutdown(app):
     await bot.delete_webhook()
+    # Properly close aiohttp session to avoid "Unclosed client session/connector" warnings
+    try:
+        await bot.session.close()
+    except Exception as e:
+        logging.warning("Failed to close bot session: %s", e)
 
 def main():
     app = web.Application()
