@@ -1,7 +1,6 @@
 
 import os
 import re
-import sys
 import logging
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart, StateFilter
@@ -11,6 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
+import json
 
 from crm import (
     pick_order_by_code_or_phone,
@@ -19,26 +19,13 @@ from crm import (
     get_tracking_number_text_by_id,
     get_orders_list_text_by_customer_id,
     save_review_by_order_id,
-    save_telegram_id_for_order
+    save_telegram_id_for_order,
+    debug_probe  # NEW
 )
 
-# ---------- Logging to stdout/stderr properly ----------
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-for h in list(logger.handlers):
-    logger.removeHandler(h)
-fmt = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
-stdout_h = logging.StreamHandler(sys.stdout)  # INFO/DEBUG -> stdout
-stdout_h.setLevel(logging.INFO)
-stdout_h.setFormatter(fmt)
-stderr_h = logging.StreamHandler(sys.stderr)  # WARNING+ -> stderr
-stderr_h.setLevel(logging.WARNING)
-stderr_h.setFormatter(fmt)
-logger.addHandler(stdout_h)
-logger.addHandler(stderr_h)
+# Logs
+logging.basicConfig(level=logging.INFO)
 logging.getLogger("aiogram").setLevel(logging.INFO)
-logging.getLogger("aiohttp.access").setLevel(logging.INFO)
-# -------------------------------------------------------
 
 # ENV
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -52,7 +39,7 @@ def _parse_admin_id(val: str | None):
     if not val:
         return None
     val = val.strip()
-    if re.fullmatch(r"-?\d+", val):
+    if re.fullmatch(r"-?\\d+", val):
         try:
             return int(val)
         except Exception:
@@ -88,7 +75,7 @@ async def start_handler(message: types.Message, state: FSMContext):
     logging.info("START from %s", message.from_user.id)
     await state.clear()
     await message.answer(
-        "👋 Привет! Я Missis S'Uzi — помогу узнать статус вашего заказа.\n"
+        "👋 Привет! Я Missis S'Uzi — помогу узнать статус вашего заказа.\\n"
         "Введите, пожалуйста, ваш bot_code или номер телефона 🤍"
     )
     await state.set_state(AuthStates.waiting_for_code)
@@ -97,29 +84,48 @@ async def start_handler(message: types.Message, state: FSMContext):
 async def ping_handler(message: types.Message):
     await message.answer("pong ✅")
 
-@dp.message(Command("alive"))
-async def alive_handler(message: types.Message):
-    await message.answer("I am alive ✅")
-
 @dp.message(Command("myid"))
 async def myid_handler(message: types.Message):
     await message.answer(f"Ваш chat_id: {message.chat.id}")
 
-@dp.message(Command("debug"))
-async def debug_handler(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    await message.answer(
-        f"debug:\nstate={await state.get_state()}\n"
-        f"authed={await is_authed(state)}\n"
-        f"order_id={data.get('order_id')}\ncustomer_id={data.get('customer_id')}"
-    )
+@dp.message(Command("probe"))
+async def probe_handler(message: types.Message):
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Использование: /probe 7488  или  /probe +7XXXXXXXXXX")
+        return
+    value = parts[1].strip()
+    try:
+        report = debug_probe(value)
+    except Exception as e:
+        logging.exception("probe failed")
+        await message.answer(f"Проверка упала: {e}")
+        return
 
-@dp.message(Command("logout"))
-async def logout_handler(message: types.Message, state: FSMContext):
-    logging.info("LOGOUT by %s", message.from_user.id)
-    await state.clear()
-    await message.answer("Вы вышли из авторизации. Введите bot_code или номер телефона, чтобы продолжить 🤍")
-    await state.set_state(AuthStates.waiting_for_code)
+    lines = []
+    lines.append("🔎 PROBE-результат:")
+    lines.append(f"• Ввод: {report.get('input')}")
+    lines.append(f"• Нормализованный телефон: {report.get('normalized_phone') or '—'}")
+    lines.append(f"• Найдено заказов по bot_code: {report['by_code'].get('count')}")
+    if report['by_code'].get('first'):
+        o = report['by_code']['first']
+        lines.append(f"   └ первый: id={o.get('id')} №{o.get('number')} site={o.get('site')} bot_code={o.get('bot_code')}")
+    lines.append(f"• Найдено клиентов по телефону: {report['by_phone'].get('customers_count')}")
+    if report['by_phone'].get('first_customer'):
+        c = report['by_phone']['first_customer']
+        lines.append(f"   └ первый клиент: id={c.get('id')} name={c.get('firstName','') or ''} {c.get('lastName','') or ''}".strip())
+    lines.append(f"• Найдено заказов по customerId: {report['by_phone'].get('orders_count')}")
+    if report['by_phone'].get('first_order'):
+        o = report['by_phone']['first_order']
+        lines.append(f"   └ первый заказ: id={o.get('id')} №{o.get('number')} site={o.get('site')}")
+    lines.append(f"• Выбранный заказ: {report.get('picked') or '—'}")
+    lines.append("")
+    lines.append("Если по коду/телефону ноль результатов: проверьте в CRM, что:")
+    lines.append("— код поля именно customFields.bot_code (а не имя-лейбл);")
+    lines.append("— это именно заказ (а не лид/обращение);")
+    lines.append("— телефон в формате +7XXXXXXXXXX;")
+    lines.append("— сайт заказа доступен текущему apiKey.")
+    await message.answer("\\n".join(lines))
 
 @dp.message(StateFilter(AuthStates.waiting_for_code), F.text)
 async def process_auth(message: types.Message, state: FSMContext):
@@ -141,7 +147,7 @@ async def process_auth(message: types.Message, state: FSMContext):
     if not order:
         logging.info("AUTH not found for %s", message.from_user.id)
         await message.answer(
-            "❌ Не нашла заказ по введённым данным.\n"
+            "❌ Не нашла заказ по введённым данным.\\n"
             "Проверьте bot_code или введите номер телефона в формате +7XXXXXXXXXX 🤍"
         )
         return
@@ -197,7 +203,7 @@ async def orders_handler(callback: types.CallbackQuery, state: FSMContext):
     else:
         o = get_order_by_id(data["order_id"])
         status = o.get("statusComment") or o.get("status") or "Без статуса"
-        text = f"📋 Ваши заказы:\n— #{o.get('number')} ({status})"
+        text = f"📋 Ваши заказы:\\n— #{o.get('number')} ({status})"
     await callback.message.answer(text, reply_markup=get_main_keyboard())
     await callback.answer()
 
@@ -217,7 +223,7 @@ async def support_message_receiver(message: types.Message, state: FSMContext):
     uname = f"@{message.from_user.username}" if message.from_user.username else f"id {message.from_user.id}"
     if ADMIN_ID is not None:
         try:
-            await bot.send_message(ADMIN_ID, f"🆘 Запрос поддержки от {uname}:\n{message.text}")
+            await bot.send_message(ADMIN_ID, f"🆘 Запрос поддержки от {uname}:\\n{message.text}")
         except Exception as e:
             logging.warning("Failed to deliver support message to ADMIN_ID=%r: %s", ADMIN_ID, e)
     else:
@@ -225,23 +231,6 @@ async def support_message_receiver(message: types.Message, state: FSMContext):
     await message.answer("Спасибо! Передала сообщение. Мы ответим как можно скорее 🤍",
                          reply_markup=get_main_keyboard())
     await state.set_state(None)
-
-@dp.message(StateFilter(AuthStates.waiting_for_review), F.text)
-async def review_handler(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    order_id = data.get("order_id")
-    if order_id:
-        save_review_by_order_id(order_id, message.text)
-    await message.answer("Спасибо за ваш отзыв! Нам важно ваше мнение 💬😊", reply_markup=get_main_keyboard())
-    await state.set_state(None)
-
-# Safety net: try auth on any text if not authorized
-@dp.message(F.text)
-async def any_text_fallback(message: types.Message, state: FSMContext):
-    current = await state.get_state()
-    logging.debug("Fallback text from %s, state=%s", message.from_user.id, current)
-    if not await is_authed(state):
-        await process_auth(message, state)
 
 # Health endpoint (GET) so we can quickly see service is up
 async def health(request: web.Request):
@@ -264,7 +253,6 @@ async def on_startup(app):
 
 async def on_shutdown(app):
     await bot.delete_webhook()
-    # Close session cleanly
     try:
         await bot.session.close()
     except Exception as e:
@@ -272,10 +260,8 @@ async def on_shutdown(app):
 
 def main():
     app = web.Application()
-    # Webhook handlers
     SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
     SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/")
-    # Health
     app.router.add_get("/healthz", health)
     setup_application(app, dp, bot=bot)
     app.on_startup.append(on_startup)

@@ -5,6 +5,7 @@ import requests
 
 API_KEY = os.getenv("CRM_API_KEY", "pDUAhKJaZZlSXnWtSberXS6PCwfiGP4D")
 CRM_URL = os.getenv("CRM_URL", "https://valentinkalinovski.retailcrm.ru")
+BOT_CODE_FIELD = os.getenv("CRM_BOT_CODE_FIELD", "bot_code")  # можно переопределить код поля
 
 def _log_http_error(prefix: str, resp: requests.Response):
     try:
@@ -52,9 +53,17 @@ def _normalize_phone(s: str) -> str:
     return digits
 
 def _orders_by_bot_code(code: str) -> list:
-    data = crm_get("orders", {"filter[customFields][bot_code]": code, "limit": 20})
+    # используем настраиваемый код поля из ENV CRM_BOT_CODE_FIELD
+    field_code = BOT_CODE_FIELD or "bot_code"
+    data = crm_get("orders", {f"filter[customFields][{field_code}]": code, "limit": 20})
     orders = data.get("orders", []) or []
-    return [o for o in orders if ((o.get("customFields") or {}).get("bot_code") == code)]
+    # дополнительная проверка по exact match
+    out = []
+    for o in orders:
+        cf = (o.get("customFields") or {})
+        if str(cf.get(field_code, "")).strip() == str(code).strip():
+            out.append(o)
+    return out
 
 def _customers_by_phone(phone: str) -> list:
     data = crm_get("customers", {"filter[phone]": phone, "limit": 20})
@@ -95,26 +104,15 @@ def get_order_by_id(order_id: int):
     return data.get("order") or {}
 
 def save_telegram_id_for_order(order_id: int, telegram_id: int, site: str | None = None):
-    """
-    Надёжная запись telegram_id в customFields.
-    1) Пытаемся с site в query (если пришёл).
-    2) При 400 — повторяем БЕЗ site (часть инсталляций RetailCRM требует, чтобы site не передавался при edit by=id).
-    3) Логируем тело ответа при ошибке.
-    """
     payload = {"order": {"customFields": {"telegram_id": str(telegram_id)}}}
-    # попытка №1 — с site (если есть)
     params = {"by": "id"}
     if site:
         params["site"] = site
     try:
         return crm_post(f"orders/{order_id}/edit", payload, params=params)
     except requests.HTTPError as e:
-        # Если пробовали с site — делаем повтор без site
         if site:
-            try:
-                return crm_post(f"orders/{order_id}/edit", payload, params={"by": "id"})
-            except requests.HTTPError:
-                raise
+            return crm_post(f"orders/{order_id}/edit", payload, params={"by": "id"})
         raise
 
 def _extract_track(o: dict) -> str | None:
@@ -145,7 +143,7 @@ def get_tracking_number_text_by_id(order_id: int):
     track_num = _extract_track(o)
     num = o.get("number", "—")
     if track_num:
-        return f"🎯 Заказ #{num}\nВаш трек-номер: {track_num}\nОтследить: https://www.cdek.ru/ru/tracking?order_id={track_num}"
+        return f"🎯 Заказ #{num}\\nВаш трек-номер: {track_num}\\nОтследить: https://www.cdek.ru/ru/tracking?order_id={track_num}"
     return "📦 Трек-номер пока не присвоен, но я дам знать, как только он появится 🤍"
 
 def get_order_status_text_by_id(order_id: int):
@@ -154,7 +152,7 @@ def get_order_status_text_by_id(order_id: int):
         return "📦 Пока нет активных заказов. Я всё проверила 🤍"
     status = o.get("statusComment") or o.get("status") or "Статус не указан"
     num = o.get("number", "—")
-    return f"📦 Заказ #{num}\nСтатус: {status}"
+    return f"📦 Заказ #{num}\\nСтатус: {status}"
 
 def get_orders_list_text_by_customer_id(customer_id: int):
     if not customer_id:
@@ -165,7 +163,7 @@ def get_orders_list_text_by_customer_id(customer_id: int):
     out = ["📋 Ваши заказы:"]
     for o in orders:
         out.append(f"— #{o.get('number')} ({o.get('statusComment') or o.get('status') or 'Без статуса'})")
-    return "\n".join(out)
+    return "\\n".join(out)
 
 def save_review_by_order_id(order_id: int, review_text: str):
     o = get_order_by_id(order_id)
@@ -177,5 +175,56 @@ def save_review_by_order_id(order_id: int, review_text: str):
     try:
         return crm_post(f"orders/{order_id}/edit", payload, params=params)
     except requests.HTTPError:
-        # Повтор без site, если вдруг мешает
         return crm_post(f"orders/{order_id}/edit", payload, params={"by": "id"})
+
+def debug_probe(value: str) -> dict:
+    by_code = _orders_by_bot_code(value)
+    by_code_first = None
+    if by_code:
+        o = by_code[0]
+        by_code_first = {
+            "id": o.get("id"),
+            "number": o.get("number"),
+            "site": o.get("site"),
+            "bot_code": ((o.get("customFields") or {}).get(BOT_CODE_FIELD)),
+        }
+
+    norm_phone = _normalize_phone(value)
+    customers = _customers_by_phone(norm_phone) if norm_phone else []
+    first_customer = customers[0] if customers else None
+    first_c_brief = None
+    if first_customer:
+        first_c_brief = {
+            "id": first_customer.get("id"),
+            "firstName": first_customer.get("firstName"),
+            "lastName": first_customer.get("lastName"),
+        }
+
+    orders_by_c = _orders_by_customer_id(first_customer.get("id")) if first_customer and first_customer.get("id") else []
+    first_order = orders_by_c[0] if orders_by_c else None
+    first_o_brief = None
+    if first_order:
+        first_o_brief = {
+            "id": first_order.get("id"),
+            "number": first_order.get("number"),
+            "site": first_order.get("site"),
+        }
+
+    picked = None
+    if by_code:
+        picked = f"#{by_code[0].get('number')} (id={by_code[0].get('id')})"
+    elif first_order:
+        picked = f"#{first_order.get('number')} (id={first_order.get('id')})"
+
+    return {
+        "input": value,
+        "normalized_phone": norm_phone,
+        "by_code": {"count": len(by_code), "first": by_code_first},
+        "by_phone": {
+            "customers_count": len(customers),
+            "first_customer": first_c_brief,
+            "orders_count": len(orders_by_c),
+            "first_order": first_o_brief,
+        },
+        "picked": picked,
+    }
