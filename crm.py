@@ -86,14 +86,6 @@ def save_telegram_id_for_order(order_id: int, telegram_id: int, site: str | None
     r.raise_for_status()
     return r.json()
 
-def get_order_status_text_by_id(order_id: int):
-    o = get_order_by_id(order_id)
-    if not o:
-        return "📦 Пока нет активных заказов. Я всё проверила 🤍"
-    status = o.get("statusComment") or o.get("status") or "Статус не указан"
-    num = o.get("number", "—")
-    return f"📦 Заказ #{num}\nСтатус: {status}"
-
 def _extract_track(o: dict) -> str | None:
     d = (o or {}).get("delivery") or {}
     cf = (o or {}).get("customFields") or {}
@@ -106,7 +98,7 @@ def _extract_track(o: dict) -> str | None:
     tracks = d.get("tracks") or []
     if isinstance(tracks, list):
         for t in tracks:
-            for key in ("number", "trackNumber", "trackingNumber", "code"):
+            for key in ("number", "trackNumber", "TrackingNumber", "code"):
                 candidates.append((t or {}).get(key))
     for key in ("track", "track_number", "tracking_number", "ttn", "awb", "awb_number"):
         candidates.append(cf.get(key))
@@ -124,6 +116,14 @@ def get_tracking_number_text_by_id(order_id: int):
     if track_num:
         return f"🎯 Заказ #{num}\nВаш трек-номер: {track_num}\nОтследить: https://www.cdek.ru/ru/tracking?order_id={track_num}"
     return "📦 Трек-номер пока не присвоен, но я дам знать, как только он появится 🤍"
+
+def get_order_status_text_by_id(order_id: int):
+    o = get_order_by_id(order_id)
+    if not o:
+        return "📦 Пока нет активных заказов. Я всё проверила 🤍"
+    status = o.get("statusComment") or o.get("status") or "Статус не указан"
+    num = o.get("number", "—")
+    return f"📦 Заказ #{num}\nСтатус: {status}"
 
 def get_orders_list_text_by_customer_id(customer_id: int):
     if not customer_id:

@@ -1,5 +1,6 @@
 
 import os
+import re
 import logging
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart, StateFilter
@@ -20,15 +21,32 @@ from crm import (
     save_telegram_id_for_order
 )
 
-# Verbose logs while stabilizing
+# Logs
 logging.basicConfig(level=logging.INFO)
-logging.getLogger("aiogram").setLevel(logging.DEBUG)
+logging.getLogger("aiogram").setLevel(logging.INFO)
 
+# ENV
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8080))
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
+
+# ADMIN_ID safe parse
+ADMIN_ID_RAW = os.getenv("ADMIN_ID")
+def _parse_admin_id(val: str | None):
+    if not val:
+        return None
+    val = val.strip()
+    if re.fullmatch(r"-?\d+", val):
+        try:
+            return int(val)
+        except Exception:
+            return None
+    return None
+ADMIN_ID = _parse_admin_id(ADMIN_ID_RAW)
+
+# Drop pending updates on start (default true)
+DROP_UPDATES_ON_START = os.getenv("DROP_UPDATES_ON_START", "true").lower() == "true"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -64,12 +82,9 @@ async def start_handler(message: types.Message, state: FSMContext):
 async def ping_handler(message: types.Message):
     await message.answer("pong ✅")
 
-@dp.message(Command("logout"))
-async def logout_handler(message: types.Message, state: FSMContext):
-    logging.info("LOGOUT by %s", message.from_user.id)
-    await state.clear()
-    await message.answer("Вы вышли из авторизации. Введите bot_code или номер телефона, чтобы продолжить 🤍")
-    await state.set_state(AuthStates.waiting_for_code)
+@dp.message(Command("alive"))
+async def alive_handler(message: types.Message):
+    await message.answer("I am alive ✅")
 
 @dp.message(Command("myid"))
 async def myid_handler(message: types.Message):
@@ -84,6 +99,13 @@ async def debug_handler(message: types.Message, state: FSMContext):
         f"order_id={data.get('order_id')}\ncustomer_id={data.get('customer_id')}"
     )
 
+@dp.message(Command("logout"))
+async def logout_handler(message: types.Message, state: FSMContext):
+    logging.info("LOGOUT by %s", message.from_user.id)
+    await state.clear()
+    await message.answer("Вы вышли из авторизации. Введите bot_code или номер телефона, чтобы продолжить 🤍")
+    await state.set_state(AuthStates.waiting_for_code)
+
 @dp.message(StateFilter(AuthStates.waiting_for_code), F.text)
 async def process_auth(message: types.Message, state: FSMContext):
     code_or_phone = (message.text or "").strip()
@@ -97,7 +119,7 @@ async def process_auth(message: types.Message, state: FSMContext):
     try:
         order = pick_order_by_code_or_phone(code_or_phone)
     except Exception as e:
-        logging.exception("Auth CRM error: %s", e)
+        logging.exception("Auth CRM error")
         await message.answer("Сейчас не получается подключиться к CRM. Попробуйте ещё раз через минуту 🤍")
         return
 
@@ -178,11 +200,15 @@ async def support_handler(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(StateFilter(AuthStates.waiting_support_message), F.text)
 async def support_message_receiver(message: types.Message, state: FSMContext):
     uname = f"@{message.from_user.username}" if message.from_user.username else f"id {message.from_user.id}"
-    try:
-        await bot.send_message(ADMIN_ID, f"🆘 Запрос поддержки от {uname}:\n{message.text}")
-    except Exception as e:
-        logging.warning("Failed to deliver support message to ADMIN_ID=%s: %s", ADMIN_ID, e)
-    await message.answer("Спасибо! Передала сообщение. Мы ответим как можно скорее 🤍", reply_markup=get_main_keyboard())
+    if ADMIN_ID is not None:
+        try:
+            await bot.send_message(ADMIN_ID, f"🆘 Запрос поддержки от {uname}:\n{message.text}")
+        except Exception as e:
+            logging.warning("Failed to deliver support message to ADMIN_ID=%r: %s", ADMIN_ID, e)
+    else:
+        logging.warning("ADMIN_ID is invalid or not set (value=%r); skipping admin notification", ADMIN_ID_RAW)
+    await message.answer("Спасибо! Передала сообщение. Мы ответим как можно скорее 🤍",
+                         reply_markup=get_main_keyboard())
     await state.set_state(None)
 
 @dp.message(StateFilter(AuthStates.waiting_for_review), F.text)
@@ -202,20 +228,35 @@ async def any_text_fallback(message: types.Message, state: FSMContext):
     if not await is_authed(state):
         await process_auth(message, state)
 
+# Health endpoint (GET) so we can quickly see service is up
+async def health(request: web.Request):
+    return web.json_response({"ok": True})
+
 async def on_startup(app):
-    url = WEBHOOK_URL
-    if not url.endswith(WEBHOOK_PATH):
-        url = url.rstrip("/") + WEBHOOK_PATH
-    await bot.set_webhook(url, allowed_updates=["message", "callback_query"])
-    logging.info("Webhook set to: %s", url)
+    try:
+        url = WEBHOOK_URL
+        if not url.endswith(WEBHOOK_PATH):
+            url = url.rstrip("/") + WEBHOOK_PATH
+        await bot.set_webhook(
+            url,
+            allowed_updates=["message", "callback_query"],
+            drop_pending_updates=DROP_UPDATES_ON_START,
+        )
+        logging.info("Webhook set to: %s", url)
+    except Exception as e:
+        logging.exception("Failed to set webhook: %s", e)
+        raise
 
 async def on_shutdown(app):
     await bot.delete_webhook()
 
 def main():
     app = web.Application()
+    # Webhook handlers
     SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
     SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/")
+    # Health
+    app.router.add_get("/healthz", health)
     setup_application(app, dp, bot=bot)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
