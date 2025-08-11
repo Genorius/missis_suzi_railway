@@ -1,6 +1,7 @@
 
 import os
 import re
+import sys
 import logging
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart, StateFilter
@@ -21,9 +22,23 @@ from crm import (
     save_telegram_id_for_order
 )
 
-# Logs
-logging.basicConfig(level=logging.INFO)
+# ---------- Logging to stdout/stderr properly ----------
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+for h in list(logger.handlers):
+    logger.removeHandler(h)
+fmt = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
+stdout_h = logging.StreamHandler(sys.stdout)  # INFO/DEBUG -> stdout
+stdout_h.setLevel(logging.INFO)
+stdout_h.setFormatter(fmt)
+stderr_h = logging.StreamHandler(sys.stderr)  # WARNING+ -> stderr
+stderr_h.setLevel(logging.WARNING)
+stderr_h.setFormatter(fmt)
+logger.addHandler(stdout_h)
+logger.addHandler(stderr_h)
 logging.getLogger("aiogram").setLevel(logging.INFO)
+logging.getLogger("aiohttp.access").setLevel(logging.INFO)
+# -------------------------------------------------------
 
 # ENV
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -249,7 +264,7 @@ async def on_startup(app):
 
 async def on_shutdown(app):
     await bot.delete_webhook()
-    # Properly close aiohttp session to avoid "Unclosed client session/connector" warnings
+    # Close session cleanly
     try:
         await bot.session.close()
     except Exception as e:
