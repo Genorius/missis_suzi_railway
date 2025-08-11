@@ -53,11 +53,9 @@ def _normalize_phone(s: str) -> str:
     return digits
 
 def _orders_by_bot_code(code: str) -> list:
-    # используем настраиваемый код поля из ENV CRM_BOT_CODE_FIELD
     field_code = BOT_CODE_FIELD or "bot_code"
     data = crm_get("orders", {f"filter[customFields][{field_code}]": code, "limit": 20})
     orders = data.get("orders", []) or []
-    # дополнительная проверка по exact match
     out = []
     for o in orders:
         cf = (o.get("customFields") or {})
@@ -122,7 +120,7 @@ def _extract_track(o: dict) -> str | None:
     for key in ("number", "trackNumber", "trackingNumber", "track_number", "tracking_number"):
         candidates.append(d.get(key))
     data = d.get("data") or {}
-    for key in ("number", "trackNumber", "trackingNumber", "track_number", "tracking_number", "barcode"):
+    for key in ("number", "trackNumber", "TrackingNumber", "track_number", "tracking_number", "barcode"):
         candidates.append(data.get(key))
     tracks = d.get("tracks") or []
     if isinstance(tracks, list):
@@ -143,7 +141,7 @@ def get_tracking_number_text_by_id(order_id: int):
     track_num = _extract_track(o)
     num = o.get("number", "—")
     if track_num:
-        return f"🎯 Заказ #{num}\\nВаш трек-номер: {track_num}\\nОтследить: https://www.cdek.ru/ru/tracking?order_id={track_num}"
+        return f"🎯 Заказ #{num}\nВаш трек-номер: {track_num}\nОтследить: https://www.cdek.ru/ru/tracking?order_id={track_num}"
     return "📦 Трек-номер пока не присвоен, но я дам знать, как только он появится 🤍"
 
 def get_order_status_text_by_id(order_id: int):
@@ -152,7 +150,7 @@ def get_order_status_text_by_id(order_id: int):
         return "📦 Пока нет активных заказов. Я всё проверила 🤍"
     status = o.get("statusComment") or o.get("status") or "Статус не указан"
     num = o.get("number", "—")
-    return f"📦 Заказ #{num}\\nСтатус: {status}"
+    return f"📦 Заказ #{num}\nСтатус: {status}"
 
 def get_orders_list_text_by_customer_id(customer_id: int):
     if not customer_id:
@@ -163,7 +161,7 @@ def get_orders_list_text_by_customer_id(customer_id: int):
     out = ["📋 Ваши заказы:"]
     for o in orders:
         out.append(f"— #{o.get('number')} ({o.get('statusComment') or o.get('status') or 'Без статуса'})")
-    return "\\n".join(out)
+    return "\n".join(out)
 
 def save_review_by_order_id(order_id: int, review_text: str):
     o = get_order_by_id(order_id)

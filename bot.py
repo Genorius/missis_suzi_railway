@@ -10,7 +10,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-import json
 
 from crm import (
     pick_order_by_code_or_phone,
@@ -20,7 +19,7 @@ from crm import (
     get_orders_list_text_by_customer_id,
     save_review_by_order_id,
     save_telegram_id_for_order,
-    debug_probe  # NEW
+    debug_probe
 )
 
 # Logs
@@ -33,13 +32,12 @@ WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8080))
 
-# ADMIN_ID safe parse
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 def _parse_admin_id(val: str | None):
     if not val:
         return None
     val = val.strip()
-    if re.fullmatch(r"-?\\d+", val):
+    if re.fullmatch(r"-?\d+", val):
         try:
             return int(val)
         except Exception:
@@ -47,7 +45,6 @@ def _parse_admin_id(val: str | None):
     return None
 ADMIN_ID = _parse_admin_id(ADMIN_ID_RAW)
 
-# Drop pending updates on start (default true)
 DROP_UPDATES_ON_START = os.getenv("DROP_UPDATES_ON_START", "true").lower() == "true"
 
 bot = Bot(token=BOT_TOKEN)
@@ -66,6 +63,9 @@ def get_main_keyboard():
         [InlineKeyboardButton(text="💬 Поддержка", callback_data="support")]
     ])
 
+def _is_admin(user_id: int) -> bool:
+    return ADMIN_ID is not None and user_id == ADMIN_ID
+
 async def is_authed(state: FSMContext) -> bool:
     data = await state.get_data()
     return bool(data.get("order_id"))
@@ -75,7 +75,7 @@ async def start_handler(message: types.Message, state: FSMContext):
     logging.info("START from %s", message.from_user.id)
     await state.clear()
     await message.answer(
-        "👋 Привет! Я Missis S'Uzi — помогу узнать статус вашего заказа.\\n"
+        "👋 Привет! Я Missis S'Uzi — помогу узнать статус вашего заказа.\n"
         "Введите, пожалуйста, ваш bot_code или номер телефона 🤍"
     )
     await state.set_state(AuthStates.waiting_for_code)
@@ -88,13 +88,13 @@ async def ping_handler(message: types.Message):
 async def myid_handler(message: types.Message):
     await message.answer(f"Ваш chat_id: {message.chat.id}")
 
-@dp.message(Command("probe"))
-async def probe_handler(message: types.Message):
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) < 2:
+# ---------- PROBE: admin-only command ----------
+async def _run_probe(message: types.Message, raw_value: str):
+    value = (raw_value or "").strip()
+    if not value:
         await message.answer("Использование: /probe 7488  или  /probe +7XXXXXXXXXX")
         return
-    value = parts[1].strip()
+    logging.info("PROBE by %s: %s", message.from_user.id, value)
     try:
         report = debug_probe(value)
     except Exception as e:
@@ -106,26 +106,47 @@ async def probe_handler(message: types.Message):
     lines.append("🔎 PROBE-результат:")
     lines.append(f"• Ввод: {report.get('input')}")
     lines.append(f"• Нормализованный телефон: {report.get('normalized_phone') or '—'}")
-    lines.append(f"• Найдено заказов по bot_code: {report['by_code'].get('count')}")
-    if report['by_code'].get('first'):
-        o = report['by_code']['first']
-        lines.append(f"   └ первый: id={o.get('id')} №{o.get('number')} site={o.get('site')} bot_code={o.get('bot_code')}")
-    lines.append(f"• Найдено клиентов по телефону: {report['by_phone'].get('customers_count')}")
-    if report['by_phone'].get('first_customer'):
-        c = report['by_phone']['first_customer']
-        lines.append(f"   └ первый клиент: id={c.get('id')} name={c.get('firstName','') or ''} {c.get('lastName','') or ''}".strip())
-    lines.append(f"• Найдено заказов по customerId: {report['by_phone'].get('orders_count')}")
-    if report['by_phone'].get('first_order'):
-        o = report['by_phone']['first_order']
-        lines.append(f"   └ первый заказ: id={o.get('id')} №{o.get('number')} site={o.get('site')}")
+    by_code = report.get('by_code') or {}
+    lines.append(f"• Найдено заказов по bot_code: {by_code.get('count', 0)}")
+    first = by_code.get('first')
+    if first:
+        lines.append(f"   └ первый: id={first.get('id')} №{first.get('number')} site={first.get('site')} bot_code={first.get('bot_code')}")
+    by_phone = report.get('by_phone') or {}
+    lines.append(f"• Найдено клиентов по телефону: {by_phone.get('customers_count', 0)}")
+    fc = by_phone.get('first_customer') or {}
+    if fc:
+        lines.append(f"   └ первый клиент: id={fc.get('id')} name={(fc.get('firstName') or '')} {(fc.get('lastName') or '')}".strip())
+    lines.append(f"• Найдено заказов по customerId: {by_phone.get('orders_count', 0)}")
+    fo = by_phone.get('first_order') or {}
+    if fo:
+        lines.append(f"   └ первый заказ: id={fo.get('id')} №{fo.get('number')} site={fo.get('site')}")
     lines.append(f"• Выбранный заказ: {report.get('picked') or '—'}")
     lines.append("")
     lines.append("Если по коду/телефону ноль результатов: проверьте в CRM, что:")
-    lines.append("— код поля именно customFields.bot_code (а не имя-лейбл);")
+    lines.append("— код поля именно customFields.bot_code (или задайте CRM_BOT_CODE_FIELD);")
     lines.append("— это именно заказ (а не лид/обращение);")
     lines.append("— телефон в формате +7XXXXXXXXXX;")
     lines.append("— сайт заказа доступен текущему apiKey.")
-    await message.answer("\\n".join(lines))
+    await message.answer("\n".join(lines))
+
+@dp.message(Command("probe"))
+async def probe_handler(message: types.Message):
+    if not _is_admin(message.from_user.id):
+        await message.answer("Команда доступна только администратору.")
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    arg = parts[1] if len(parts) > 1 else ""
+    await _run_probe(message, arg)
+
+# Text fallback: "probe <value>"
+@dp.message(F.text.regexp(r"^\s*probe\s+(.+)$"))
+async def probe_text_handler(message: types.Message, regexp: types.Message):
+    if not _is_admin(message.from_user.id):
+        return
+    m = re.match(r"^\s*probe\s+(.+)$", message.text, flags=re.I)
+    if not m:
+        return
+    await _run_probe(message, m.group(1))
 
 @dp.message(StateFilter(AuthStates.waiting_for_code), F.text)
 async def process_auth(message: types.Message, state: FSMContext):
@@ -147,7 +168,7 @@ async def process_auth(message: types.Message, state: FSMContext):
     if not order:
         logging.info("AUTH not found for %s", message.from_user.id)
         await message.answer(
-            "❌ Не нашла заказ по введённым данным.\\n"
+            "❌ Не нашла заказ по введённым данным.\n"
             "Проверьте bot_code или введите номер телефона в формате +7XXXXXXXXXX 🤍"
         )
         return
@@ -203,7 +224,7 @@ async def orders_handler(callback: types.CallbackQuery, state: FSMContext):
     else:
         o = get_order_by_id(data["order_id"])
         status = o.get("statusComment") or o.get("status") or "Без статуса"
-        text = f"📋 Ваши заказы:\\n— #{o.get('number')} ({status})"
+        text = f"📋 Ваши заказы:\n— #{o.get('number')} ({status})"
     await callback.message.answer(text, reply_markup=get_main_keyboard())
     await callback.answer()
 
@@ -223,7 +244,7 @@ async def support_message_receiver(message: types.Message, state: FSMContext):
     uname = f"@{message.from_user.username}" if message.from_user.username else f"id {message.from_user.id}"
     if ADMIN_ID is not None:
         try:
-            await bot.send_message(ADMIN_ID, f"🆘 Запрос поддержки от {uname}:\\n{message.text}")
+            await bot.send_message(ADMIN_ID, f"🆘 Запрос поддержки от {uname}:\n{message.text}")
         except Exception as e:
             logging.warning("Failed to deliver support message to ADMIN_ID=%r: %s", ADMIN_ID, e)
     else:
@@ -232,7 +253,7 @@ async def support_message_receiver(message: types.Message, state: FSMContext):
                          reply_markup=get_main_keyboard())
     await state.set_state(None)
 
-# Health endpoint (GET) so we can quickly see service is up
+# Health endpoint
 async def health(request: web.Request):
     return web.json_response({"ok": True})
 
